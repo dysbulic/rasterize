@@ -1,0 +1,14 @@
+{
+  "name": "rasterize",
+  "version": "0.1.0",
+  "description": "program to emojify SVGs",
+  "main": "index.js",
+  "repository": "https://github.com/dysbulic/rasterize.git",
+  "author": "Will Holcomb <dys@dhappy.org>",
+  "license": "MIT",
+  "private": false,
+  "dependencies": {
+    "chrome-remote-interface": "^0.29.0",
+    "fs": "^0.0.1-security"
+  }
+}
