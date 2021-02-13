@@ -42,18 +42,18 @@ CDP(async (client) => {
       deviceScaleFactor: 1,
       mobile: false
     })
+    await Page.navigate({ url })
+    await Page.loadEventFired()
     await client.Emulation.setDefaultBackgroundColorOverride({
       color: { r: 0, g: 0, b: 0, a: 0 }
     })
-    await Page.navigate({ url })
-    await Page.loadEventFired()
     await Page.startScreencast({ format: 'png', everyNthFrame: 1 });
     let counter = 1
     while(counter <= iters) {
-      const { data, metadata, sessionId } = (
+        const { data, metadata, sessionId } = (
         await Page.screencastFrame()
       )
-      const out = `flag.${(counter++).toString().padStart(2, '0')}.png`
+      const out = `shot.${(counter++).toString().padStart(2, '0')}.png`
       fs.writeFileSync(
         out, Buffer.from(data, 'base64')
       )
