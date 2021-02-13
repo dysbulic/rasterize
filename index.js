@@ -42,6 +42,9 @@ CDP(async (client) => {
       deviceScaleFactor: 1,
       mobile: false
     })
+    await client.Emulation.setDefaultBackgroundColorOverride({
+      color: { r: 0, g: 0, b: 0, a: 0 }
+    })
     await Page.navigate({ url })
     await Page.loadEventFired()
     await Page.startScreencast({ format: 'png', everyNthFrame: 1 });
