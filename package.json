@@ -9,6 +9,7 @@
   "private": false,
   "dependencies": {
     "chrome-remote-interface": "^0.29.0",
-    "fs": "^0.0.1-security"
+    "fs": "^0.0.1-security",
+    "yargs": "^16.2.0"
   }
 }
