@@ -33,6 +33,7 @@ if(!argv.url) throw new Error('--url is required')
 CDP(async (client) => {
   const { Page, Runtime } = client
   const { url, iters = 20, width = 200, height = 200 } = argv
+  const color = { r: 255, g: 255, b: 255, a: 0 }
 
   try {
     await Page.enable()
@@ -45,12 +46,15 @@ CDP(async (client) => {
     await Page.navigate({ url })
     await Page.loadEventFired()
     await client.Emulation.setDefaultBackgroundColorOverride({
-      color: { r: 0, g: 0, b: 0, a: 0 }
+      color
     })
     await Page.startScreencast({ format: 'png', everyNthFrame: 1 });
     let counter = 1
     while(counter <= iters) {
-        const { data, metadata, sessionId } = (
+      await client.Emulation.setDefaultBackgroundColorOverride({
+        color
+      })
+      const { data, metadata, sessionId } = (
         await Page.screencastFrame()
       )
       const out = `shot.${(counter++).toString().padStart(2, '0')}.png`
