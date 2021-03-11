@@ -6,22 +6,27 @@ const argv = (
   yargs
   .option('iters', {
     alias: 'i',
-    description: 'Number of iterations',
+    description: 'Number of iterations [default 20]',
     type: 'number',
   })
   .option('url', {
     alias: 'u',
-    description: 'URL to load',
+    description: 'URL to load [required]',
+    type: 'string',
+  })
+  .option('prefix', {
+    alias: 'p',
+    description: 'Image filename prefix [default "shot"]',
     type: 'string',
   })
   .option('width', {
     alias: 'w',
-    description: 'Width to render',
+    description: 'Width to render [default 200]',
     type: 'number',
   })
   .option('height', {
     alias: 'h',
-    description: 'Height to render',
+    description: 'Height to render [default 200]',
     type: 'number',
   })
   .help()
@@ -32,7 +37,9 @@ if(!argv.url) throw new Error('--url is required')
 
 CDP(async (client) => {
   const { Page, Runtime } = client
-  const { url, iters = 20, width = 200, height = 200 } = argv
+  const {
+    url, iters = 20, width = 200, height = 200, prefix = 'shot'
+  } = argv
   const color = { r: 255, g: 255, b: 255, a: 0 }
 
   try {
@@ -51,13 +58,10 @@ CDP(async (client) => {
     await Page.startScreencast({ format: 'png', everyNthFrame: 1 });
     let counter = 1
     while(counter <= iters) {
-      await client.Emulation.setDefaultBackgroundColorOverride({
-        color
-      })
       const { data, metadata, sessionId } = (
         await Page.screencastFrame()
       )
-      const out = `shot.${(counter++).toString().padStart(2, '0')}.png`
+      const out = `${prefix}.${(counter++).toString().padStart(3, '0')}.png`
       fs.writeFileSync(
         out, Buffer.from(data, 'base64')
       )
