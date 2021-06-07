@@ -29,6 +29,11 @@ const argv = (
     description: 'Height to render [default 200]',
     type: 'number',
   })
+  .option('drop', {
+    alias: 'd',
+    description: 'Frames to drop between captures [defualt 0]',
+    type: 'number',
+  })
   .help()
   .argv
 )
@@ -38,7 +43,8 @@ if(!argv.url) throw new Error('--url is required')
 CDP(async (client) => {
   const { Page, Runtime } = client
   const {
-    url, iters = 20, width = 200, height = 200, prefix = 'shot'
+    url, iters = 20, width = 200, height = 200,
+    prefix = 'shot', drop = 0,
   } = argv
   const color = { r: 255, g: 255, b: 255, a: 0 }
 
@@ -67,6 +73,12 @@ CDP(async (client) => {
       )
       console.info(`Creating: ${out}`)
       await Page.screencastFrameAck({ sessionId })
+      for(let i = 1; i <= drop; i++) {
+        const { data, metadata, sessionId } = (
+          await Page.screencastFrame()
+        )
+        await Page.screencastFrameAck({ sessionId })
+      }
     }
   } finally {
     client.close()
