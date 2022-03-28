@@ -1,0 +1,79 @@
+#!/usr/bin/env node
+
+const fs = require('fs')
+const path = require('path')
+const yargs = require('yargs/yargs')
+const { JSDOM } = require('jsdom')
+const paper = require('paper')
+const pluralize = require('pluralize')
+const { SVGPathData } = require('svg-pathdata');
+
+const main = async () => {
+  const args = (
+    yargs(process.argv.slice(2))
+    .command(
+      '* [files..]',
+      'This program uses paper.js to reduce the number of points in an SVG’s <path/>s.',
+    )
+    .option('tolerance', {
+      default: 10,
+      alias: 't',
+    })
+    .demandOption('files')
+    .alias('h', 'help')
+    .help()
+    .showHelpOnFail(true, 'HELP!')
+  )
+  const argv = await args.argv
+
+  paper.setup(new paper.Canvas(1000, 1000))
+
+  await Promise.all(
+    argv.files.map(async (file) => {
+      try {
+        const out = `${path.basename(file, '.svg')}.simplified.svg`
+        try {
+          await fs.promises.access(out, fs.F_OK)
+          console.error(`Destination ${out} Exists: Skipping`)
+        } catch(dne) {
+          const dom = (await JSDOM.fromFile(
+            file,
+            { contentType: 'image/svg+xml' },
+          ))
+          const { document: doc } = dom.window
+          const counts = await Promise.all(
+            Array.from(doc.querySelectorAll('path')).map(
+              (elem) => {
+                const data = elem.getAttribute('d')
+                const path = new paper.Path(
+                  new SVGPathData(data).encode()
+                )
+                const preCount = path.segments.length
+                path.simplify(argv.tolerance)
+                const postCount = path.segments.length
+                elem.setAttribute(
+                  'd', path.exportSVG().getAttribute('d')
+                )
+                console.info(
+                  `Reduced ${preCount} ${pluralize('segment', preCount)}`
+                  + ` to ${postCount}`
+                  + ` (-${((preCount - postCount) * 100 / preCount).toFixed(2)}%)`
+                )
+                return { preCount, postCount }
+              }
+            )
+          )
+          console.info(`Writing processed SVG (tolerance: ${typeof argv.tolerance}) to ${out}`)
+          await fs.promises.writeFile(out, await dom.serialize())
+        }
+      } catch(err) {
+        console.error(`Couldn’t Load: ${path.basename(file)}`)
+        console.error(`  Error: ${err.message}`)
+      }
+    })
+  )
+}
+
+main()
+.then(() => process.exit(0))
+.catch((reason) => console.error(reason))
