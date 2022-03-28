@@ -46,6 +46,7 @@ const main = async () => {
               (elem) => {
                 const data = elem.getAttribute('d')
                 const path = new paper.Path(
+                   // paper.js path parsing sometimes fails
                   new SVGPathData(data).encode()
                 )
                 const preCount = path.segments.length
@@ -63,7 +64,7 @@ const main = async () => {
               }
             )
           )
-          console.info(`Writing processed SVG (tolerance: ${typeof argv.tolerance}) to ${out}`)
+          console.info(`Writing processed SVG (tolerance: ${argv.tolerance}) to ${out}`)
           await fs.promises.writeFile(out, await dom.serialize())
         }
       } catch(err) {
