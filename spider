@@ -3,6 +3,7 @@
 const fs = require('fs')
 const path = require('path')
 const yargs = require('yargs/yargs')
+const puppeteer = require('puppeteer')
 const pluralize = require('pluralize')
 
 const main = async () => {
@@ -12,18 +13,57 @@ const main = async () => {
       '* [urls..]',
       (
         "This program is for downloading and saving the art from\n"
-        + " Vecteezy.com using Puppeteer.\n\n"
+        + "Vecteezy.com using Puppeteer.\n\n"
         + "It requires Chrome be running."
       ),
     )
+    .option('urls', {
+      default: ['https://news.ycombinator.com']
+    })
+    .option('headless', {
+      type: 'boolean',
+      default: true,
+      alias: 'l',
+    })
     .demandOption('urls')
     .alias('h', 'help')
     .help()
     .showHelpOnFail(true, 'HELP!')
   )
   const argv = await args.argv
+
+  const browser = await puppeteer.launch({ headless: argv.headless })
+  await Promise.allSettled(
+    argv.urls.map(async (url) => {
+      const [, site] = url.match(/^[a-z]*:?\/\/([^\/]+)/i)
+      const dlPath = path.resolve(`./mirror/${site}`)
+      try {
+        await fs.promises.access(dlPath, fs.F_OK)
+      } catch(dne) {
+        console.debug(`Creating: ${dlPath}`)
+        await fs.promises.mkdir(dlPath, { recursive: true })
+      }
+
+      const page = await browser.newPage()
+      await page.goto(url, { waitUntil: 'networkidle2' })
+      const [link] = await page.$x("//a[contains(., 'Download')]")
+      if(!link) {
+        console.error(`Couldn't find “Download” link.`)
+      } else {
+        await page._client.send('Page.setDownloadBehavior', {
+          behavior: 'allow',
+          downloadPath: dlPath 
+        })
+        await link.click()
+      }
+    })
+  )
+  await browser.close()
 }
 
 main()
 .then(() => process.exit(0))
-.catch((reason) => console.error(reason.message ?? reason))
+.catch((reason) => {
+  console.error(reason.message ?? reason)
+  process.exit(23)
+})
