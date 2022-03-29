@@ -1,0 +1,29 @@
+#!/usr/bin/env node
+
+const fs = require('fs')
+const path = require('path')
+const yargs = require('yargs/yargs')
+const pluralize = require('pluralize')
+
+const main = async () => {
+  const args = (
+    yargs(process.argv.slice(2))
+    .command(
+      '* [urls..]',
+      (
+        "This program is for downloading and saving the art from\n"
+        + " Vecteezy.com using Puppeteer.\n\n"
+        + "It requires Chrome be running."
+      ),
+    )
+    .demandOption('urls')
+    .alias('h', 'help')
+    .help()
+    .showHelpOnFail(true, 'HELP!')
+  )
+  const argv = await args.argv
+}
+
+main()
+.then(() => process.exit(0))
+.catch((reason) => console.error(reason.message ?? reason))
