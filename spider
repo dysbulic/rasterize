@@ -5,6 +5,55 @@ const path = require('path')
 const yargs = require('yargs/yargs')
 const puppeteer = require('puppeteer')
 const pluralize = require('pluralize')
+const { URL } = require('url')
+const progress = require('cli-progress')
+
+const sleep = (timeout) => (
+  new Promise((r) => setTimeout(r, timeout))
+)
+
+const timeBar = async (time) => {
+  const bar = new progress.Bar({
+    format: (
+      ' >> [\u001b[32m{bar}\u001b[0m] {percentage}%'
+      + ' | ETA: {eta}s | {value}/{total}'
+    ),
+
+    // same chars for bar elements, just separated by colors
+    barCompleteChar: '█',
+    barIncompleteChar: '▒',
+
+    // change color to yellow between bar complete/incomplete -> incomplete becomes yellow
+    barGlue: '\u001b[33m'
+  })
+  bar.start(time, 0)
+
+  const step = time / 40
+  let current
+
+  for(current = 0; current < time; current += step) {
+    bar.update(current)
+    await sleep(step)
+  }
+  bar.update(current)
+
+  bar.stop()
+}
+
+const processStopper = {
+  wait: async (link) => {
+    link.click()
+    this.base = await (await link.getProperty('href')).jsonValue()
+    const self = this
+    return new Promise((resolve, reject) => {
+      self.resolve = resolve
+      self.reject = reject
+    })
+  },
+  unblock: (url) => {
+    this.resolve({ url, base: this.base })
+  }
+}
 
 const main = async () => {
   const args = (
@@ -14,16 +63,23 @@ const main = async () => {
       (
         "This program is for downloading and saving the art from\n"
         + "Vecteezy.com using Puppeteer.\n\n"
-        + "It requires Chrome be running."
+        + "It requires “google-chrome --remote-debugging-port=9222”."
       ),
     )
-    .option('urls', {
-      default: ['https://news.ycombinator.com']
-    })
     .option('headless', {
       type: 'boolean',
-      default: true,
+      default: false,
       alias: 'l',
+    })
+    .option('config', {
+      type: 'string',
+      default: 'http://localhost:9222/json/version',
+      alias: 'c',
+    })
+    .option('max-page', {
+      type: 'number',
+      default: Infinity,
+      alias: 'x',
     })
     .demandOption('urls')
     .alias('h', 'help')
@@ -32,37 +88,166 @@ const main = async () => {
   )
   const argv = await args.argv
 
-  const browser = await puppeteer.launch({ headless: argv.headless })
-  await Promise.allSettled(
-    argv.urls.map(async (url) => {
-      const [, site] = url.match(/^[a-z]*:?\/\/([^\/]+)/i)
-      const dlPath = path.resolve(`./mirror/${site}`)
+  const chalk = (await import('chalk')).default
+  const fetch = (await import('node-fetch')).default
+  const configResponse = await fetch(argv.config)
+  const config = await configResponse.json()
+  const endpoint = config.webSocketDebuggerUrl
+
+  console.info(`Connecting to: ${chalk.green(endpoint)}`)
+
+  const browser = await puppeteer.connect({
+    headless: argv.headless,
+    browserWSEndpoint: endpoint,
+  })
+
+  let urls = []
+  let count = 0
+  const page = await browser.newPage()
+  let name
+  let filename
+
+  page.on('response', async (res) => {
+    const request = await res.request()
+    const url = new URL(request.url())
+
+    let [file] = url.pathname.split('/').slice(-1)
+    if(file.endsWith('.zip')) {
+      console.debug(`Processing: ${chalk.green(url)}`)
+      console.debug(`  [${chalk.hex('#9E7922')(page.url())}]`)
+
+      const creator = (await page.$eval(
+        '.contributor-details__contributor__name',
+        (elem) => elem.textContent,
+      ))
+      .trim()
+      .replace(/\//g, '／')
+
+      const dlPath = path.resolve(`./mirror/${url.host}/${creator}`)
       try {
-        await fs.promises.access(dlPath, fs.F_OK)
+        await fs.promises.access(dlPath, fs.constants.F_OK)
       } catch(dne) {
-        console.debug(`Creating: ${dlPath}`)
+        console.debug(chalk.hex('#FF5AD9')(`Creating: ${dlPath}`))
         await fs.promises.mkdir(dlPath, { recursive: true })
       }
+  
+      filename += '.zip'
+      try {
+        await fs.promises.access(
+          path.join(dlPath, file), fs.constants.F_OK
+        )
+        console.error(chalk.red(`Renaming ${file} to ${filename}`))
+        fs.renameSync(path.join(dlPath, file), path.join(dlPath, filename))
+      } catch(dne) {
+        const out = path.join(dlPath, filename)
+        try {
+          await fs.promises.access(out, fs.constants.F_OK)
+          console.error(chalk.red(`${out} Exists; Skipping.`))
+        } catch(dne) {
+          console.debug(`Downloading To: ${chalk.hex('#8BB8DE')(out)}`)
+          const dl = await fetch(url.toString())
+          const fileStream = fs.createWriteStream(out)
+          await new Promise((resolve, reject) => {
+            dl.body.on('error', reject)
+            fileStream.on('finish', resolve)
+            dl.body.pipe(fileStream)
+          })
+        }
+      } finally {
+        await timeBar(5000)
+        processStopper.unblock(url.toString())
+      }
+    }
+  })
 
-      const page = await browser.newPage()
-      await page.goto(url, { waitUntil: 'networkidle2' })
-      const [link] = await page.$x("//a[contains(., 'Download')]")
+
+  for(const url of argv.urls) {
+    console.debug(`Processing: ${chalk.hex('#45DE29')(url)}`)
+
+    let next
+    let pageNum = 1
+
+    await page.goto(url, { waitUntil: 'networkidle2' })
+
+    while(pageNum++ <= argv.maxPage && next !== null) {
+      const selector = '.ez-resource-thumb__link'
+      const links = await page.evaluate((sel) => {
+        let elems = Array.from(document.querySelectorAll(sel))
+        return elems.map(elem => elem.href)
+      }, selector)
+      urls.push(...links)
+      console.debug(
+        `  ${chalk.hex('#AB32DE')(`Page #${++count}`)}`
+        + ` (${chalk.hex('#FFAAFF')(`${urls.length} ${pluralize('URL', urls.length)})`)})`
+        + ` [${chalk.green(page.url())}]`
+      )
+      ;([next] = await page.$x("//a[contains(., 'Next page')]"))
+      const className = (await next.getProperty('className')).toString()
+      if(className.includes('is-disabled')) {
+        next = null
+      }
+
+      if(next === null) {
+        console.debug(chalk.yellow(`No next page after #${count}.`))
+      } else {
+        await Promise.all([
+          page.waitForNavigation({ timeout: 5 * 60 * 1000 }),
+          next.click(),
+          timeBar(3000),
+        ])
+      }
+    }
+  }
+
+  count = 0
+  urls = [...new Set(urls)]
+  console.debug(chalk.hex('#C1A40F')(
+    `Downloading ${urls.length} ${pluralize('URL', urls.length)}`
+  ))
+
+  try {
+    for(const url of urls) {
+      console.debug(`${chalk.hex('##FFAA00')(`${++count} / ${urls.length}`)}: Loading: ${chalk.green(url)}`)
+      await page.goto(url, { waitUntil: 'networkidle0' })
+
+      filename = url.replace(/.*\//g, '')
+
+      const [desc] = await page.$x("//meta[@itemprop='description']")
+      if(desc) {
+        name = await (await desc.getProperty('content')).jsonValue()
+      } else {
+        console.debug('Couldn’t find description!')
+        name = null
+      }
+
+      const [link] = await page.$x("//a[contains(., 'Download Now')]")
       if(!link) {
-        console.error(`Couldn't find “Download” link.`)
+        console.error(chalk.red(`Couldn't find “Download” link.`))
       } else {
         await page._client.send('Page.setDownloadBehavior', {
-          behavior: 'allow',
-          downloadPath: dlPath 
+          behavior: 'deny',
         })
-        await link.click()
+        const response = await processStopper.wait(link)
+        // await link.click()
+        // await page.waitForNavigation()
+        // await page.waitForTimeout(30000)
+        // await timeBar(30000)
       }
+    }
+  } finally {
+    const dls = path.join(process.env.HOME, 'Downloads')
+    await page._client.send('Page.setDownloadBehavior', {
+      behavior: 'allow',
+      downloadPath: dls,
     })
-  )
-  await browser.close()
+  }
 }
 
 main()
-.then(() => process.exit(0))
+.then(() => {
+  console.debug('Exited Normally')
+  process.exit(0)
+})
 .catch((reason) => {
   console.error(reason.message ?? reason)
   process.exit(23)

@@ -1,4 +1,22 @@
 {
   "name": "rasterize",
+  "version": "0.3.0",
+  "description": "program to emojify SVGs",
+  "repository": "https://github.com/dysbulic/rasterize.git",
+  "author": "dysbulic <dys@dhappy.org>",
+  "license": "CC0-1.0",
+  "main": "rasterizer",
+  "dependencies": {
+    "chalk": "^5.0.1",
+    "chrome-remote-interface": "^0.29.0",
+    "cli-progress": "^3.10.0",
+    "jsdom": "^19.0.0",
+    "node-fetch": "^3.2.3",
+    "paper": "^0.12.15",
+    "pluralize": "^8.0.0",
+    "puppeteer": "^13.5.2",
+    "svg-pathdata": "^6.0.3",
+    "yargs": "^16.2.0"
+  },
   "packageManager": "yarn@3.2.0"
 }
