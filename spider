@@ -7,6 +7,7 @@ const puppeteer = require('puppeteer')
 const pluralize = require('pluralize')
 const { URL } = require('url')
 const progress = require('cli-progress')
+const glob = require('glob')
 
 const sleep = (timeout) => (
   new Promise((r) => setTimeout(r, timeout))
@@ -24,11 +25,11 @@ const timeBar = async (time) => {
     barIncompleteChar: '▒',
 
     // change color to yellow between bar complete/incomplete -> incomplete becomes yellow
-    barGlue: '\u001b[33m'
+    barGlue: '\u001b[33m',
   })
   bar.start(time, 0)
 
-  const step = time / 40
+  const step = time / 80
   let current
 
   for(current = 0; current < time; current += step) {
@@ -41,21 +42,55 @@ const timeBar = async (time) => {
 }
 
 const processStopper = {
-  wait: async (link) => {
-    link.click()
-    this.base = await (await link.getProperty('href')).jsonValue()
-    const self = this
-    return new Promise((resolve, reject) => {
-      self.resolve = resolve
-      self.reject = reject
-    })
+  done: false,
+  wait: ({ link, page, timeout: tout, chalk }) => {
+    this.timeout = tout
+    if(!link) {
+      console.warn('Error: Link not found.')
+    } else {
+      try {
+        const self = this
+        return new Promise(async (resolve, reject) => {
+          self.resolve = resolve
+          self.reject = reject
+
+          try {
+            await Promise.all([
+              page.waitForNavigation({ timeout: tout ?? 5 * 60 * 1000 }),
+              link.click(),
+            ])
+          } catch(err) {
+            console.error(chalk.red(err.message))
+          } finally {
+            // This doesn't work, and after is set once has no effect
+            self.done = true
+          }
+        })
+      } catch(err) {
+        console.error(err.message)
+      }
+    }
   },
-  unblock: (url) => {
+  unblock: async ({ url, maxLoops = 10, chalk }) => {
+    let interval = 1000
+    for(let count = 1; !this.done && count <= maxLoops; ++count) {
+      console.info(
+        chalk.green(`Waiting: (${count.toString(16)}):`)
+        + ` [${chalk.hex('#FFA93E')(Math.round(interval / 1000))}s]: `
+        + chalk.blueBright(url)
+      )
+      await sleep(interval)
+    }
     this.resolve({ url, base: this.base })
   }
 }
 
+let client // accessed in main `catch`
+
 const main = async () => {
+  process.on('SIGINT', () => { throw new Error('Interrupted') })
+  process.on('SIGTERM', () => { throw new Error('Terminated') })
+
   const args = (
     yargs(process.argv.slice(2))
     .command(
@@ -81,6 +116,18 @@ const main = async () => {
       default: Infinity,
       alias: 'x',
     })
+    .option('page-timeout', {
+      type: 'number',
+      default: 10 * 60,
+      alias: 't',
+      description: 'Number of seconds to wait on page operations.'
+    })
+    .option('link-timeout', {
+      type: 'number',
+      default: 30,
+      alias: 'o',
+      description: 'Number of seconds to wait on link clicks.'
+    })
     .demandOption('urls')
     .alias('h', 'help')
     .help()
@@ -96,94 +143,124 @@ const main = async () => {
 
   console.info(`Connecting to: ${chalk.green(endpoint)}`)
 
-  const browser = await puppeteer.connect({
-    headless: argv.headless,
-    browserWSEndpoint: endpoint,
-  })
+  const browser = (
+    argv.headless ? (
+      await puppeteer.launch({ headless: argv.headless })
+    ) : (
+      await puppeteer.connect({
+        browserWSEndpoint: endpoint,
+        defaultViewport: null,
+      })
+    )
+  )
 
   let urls = []
   let count = 0
-  const page = await browser.newPage()
+  let page = await browser.newPage()
+  client = await page.target().createCDPSession()
   let name
   let filename
 
   page.on('response', async (res) => {
-    const request = await res.request()
-    const url = new URL(request.url())
+    try {
+      const request = await res.request()
+      const url = new URL(request.url())
 
-    let [file] = url.pathname.split('/').slice(-1)
-    if(file.endsWith('.zip')) {
-      console.debug(`Processing: ${chalk.green(url)}`)
-      console.debug(`  [${chalk.hex('#9E7922')(page.url())}]`)
+      let [file] = url.pathname.split('/').slice(-1)
+      if(file.endsWith('.zip')) {
+        console.debug(`Processing: ${chalk.green(url)}`)
+        console.debug(`  [${chalk.hex('#9E7922')(page.url())}]`)
 
-      const creator = (await page.$eval(
-        '.contributor-details__contributor__name',
-        (elem) => elem.textContent,
-      ))
-      .trim()
-      .replace(/\//g, '／')
+        const creator = (await page.$eval(
+          '.contributor-details__contributor__name',
+          (elem) => elem.textContent,
+        ))
+        .trim()
+        .replace(/\//g, '／')
 
-      const dlPath = path.resolve(`./mirror/${url.host}/${creator}`)
-      try {
-        await fs.promises.access(dlPath, fs.constants.F_OK)
-      } catch(dne) {
-        console.debug(chalk.hex('#FF5AD9')(`Creating: ${dlPath}`))
-        await fs.promises.mkdir(dlPath, { recursive: true })
-      }
-  
-      filename += '.zip'
-      try {
-        await fs.promises.access(
-          path.join(dlPath, file), fs.constants.F_OK
-        )
-        console.error(chalk.red(`Renaming ${file} to ${filename}`))
-        fs.renameSync(path.join(dlPath, file), path.join(dlPath, filename))
-      } catch(dne) {
-        const out = path.join(dlPath, filename)
+        const dlPath = path.resolve(`./mirror/${url.host}/${creator}`)
         try {
-          await fs.promises.access(out, fs.constants.F_OK)
-          console.error(chalk.red(`${out} Exists; Skipping.`))
+          await fs.promises.access(dlPath, fs.constants.F_OK)
         } catch(dne) {
-          console.debug(`Downloading To: ${chalk.hex('#8BB8DE')(out)}`)
-          const dl = await fetch(url.toString())
-          const fileStream = fs.createWriteStream(out)
-          await new Promise((resolve, reject) => {
-            dl.body.on('error', reject)
-            fileStream.on('finish', resolve)
-            dl.body.pipe(fileStream)
+          console.debug(chalk.hex('#FF5AD9')(`Creating: ${dlPath}`))
+          await fs.promises.mkdir(dlPath, { recursive: true })
+        }
+
+        filename += '.zip'
+        try {
+          await fs.promises.access(
+            path.join(dlPath, file), fs.constants.F_OK
+          )
+          console.error(chalk.red(`Renaming ${file} to ${filename}`))
+          fs.renameSync(path.join(dlPath, file), path.join(dlPath, filename))
+        } catch(dne) {
+          const out = path.join(dlPath, filename)
+          try {
+            await fs.promises.access(out, fs.constants.F_OK)
+            console.error(chalk.red(`${out} Exists; Skipping.`))
+          } catch(dne) {
+            console.debug(`Downloading To: ${chalk.hex('#8BB8DE')(out)}`)
+            try {
+              const dl = await fetch(url.toString())
+              const fileStream = fs.createWriteStream(out)
+              await new Promise((resolve, reject) => {
+                dl.body.on('error', reject)
+                fileStream.on('finish', resolve)
+                dl.body.pipe(fileStream)
+              })
+            } catch(error) {
+              console.error({ error })
+            }
+          }
+        } finally {
+          await timeBar(5000)
+          await processStopper.unblock({
+            url: url.toString(), chalk
           })
         }
-      } finally {
-        await timeBar(5000)
-        processStopper.unblock(url.toString())
       }
+    } catch(err) {
+      console.error(chalk.red(err.message))
     }
   })
 
 
-  for(const url of argv.urls) {
+  for(const urlString of argv.urls) {
+    const url = new URL(urlString)
+    const basedir = path.join(__dirname, 'mirror', url.host)
+
     console.debug(`Processing: ${chalk.hex('#45DE29')(url)}`)
 
     let next
     let pageNum = 1
 
-    await page.goto(url, { waitUntil: 'networkidle2' })
+    await page.goto(url.toString(), { waitUntil: 'networkidle2' })
 
     while(pageNum++ <= argv.maxPage && next !== null) {
-      const selector = '.ez-resource-thumb__link'
-      const links = await page.evaluate((sel) => {
-        let elems = Array.from(document.querySelectorAll(sel))
-        return elems.map(elem => elem.href)
-      }, selector)
-      urls.push(...links)
+      const selector = '.ez-resource-grid__item'
+      const items = await page.$$(selector)
+      const links = []
+      for(const elem of items) {
+        const linkElem = await elem.$('.ez-resource-thumb__link')
+        const href = await linkElem.evaluate((l) => l.href)
+        const filename = `${href.replace(/^.*\//g, '')}.zip`
+        if(glob.sync(path.join(basedir, '*', filename)).length > 0) {
+          console.info(
+            `${chalk.hex('#FF7B2E')(filename)} is present;`
+            + ` ${chalk.redBright('Skipping…')}`
+          )
+        } else {
+          urls.push(href)
+        }
+      }
       console.debug(
         `  ${chalk.hex('#AB32DE')(`Page #${++count}`)}`
         + ` (${chalk.hex('#FFAAFF')(`${urls.length} ${pluralize('URL', urls.length)})`)})`
         + ` [${chalk.green(page.url())}]`
       )
       ;([next] = await page.$x("//a[contains(., 'Next page')]"))
-      const className = (await next.getProperty('className')).toString()
-      if(className.includes('is-disabled')) {
+      const className = (await next?.getProperty('className'))?.toString()
+      if(!className || className.includes('is-disabled')) {
         next = null
       }
 
@@ -191,7 +268,7 @@ const main = async () => {
         console.debug(chalk.yellow(`No next page after #${count}.`))
       } else {
         await Promise.all([
-          page.waitForNavigation({ timeout: 5 * 60 * 1000 }),
+          page.waitForNavigation({ timeout: argv.linkTimeout * 1000 }),
           next.click(),
           timeBar(3000),
         ])
@@ -207,36 +284,42 @@ const main = async () => {
 
   try {
     for(const url of urls) {
-      console.debug(`${chalk.hex('##FFAA00')(`${++count} / ${urls.length}`)}: Loading: ${chalk.green(url)}`)
-      await page.goto(url, { waitUntil: 'networkidle0' })
+      try {
+        console.debug(`${chalk.hex('##FFAA00')(`${++count} / ${urls.length}`)}: Loading: ${chalk.green(url)}`)
+        await page.goto(url, { waitUntil: 'networkidle0' })
 
-      filename = url.replace(/.*\//g, '')
+        filename = url.replace(/.*\//g, '')
 
-      const [desc] = await page.$x("//meta[@itemprop='description']")
-      if(desc) {
-        name = await (await desc.getProperty('content')).jsonValue()
-      } else {
-        console.debug('Couldn’t find description!')
-        name = null
-      }
+        const [desc] = await page.$x("//meta[@itemprop='description']")
+        if(desc) {
+          name = await (await desc.getProperty('content')).jsonValue()
+        } else {
+          console.debug('Couldn’t find description!')
+          name = null
+        }
 
-      const [link] = await page.$x("//a[contains(., 'Download Now')]")
-      if(!link) {
-        console.error(chalk.red(`Couldn't find “Download” link.`))
-      } else {
-        await page._client.send('Page.setDownloadBehavior', {
-          behavior: 'deny',
-        })
-        const response = await processStopper.wait(link)
-        // await link.click()
-        // await page.waitForNavigation()
-        // await page.waitForTimeout(30000)
-        // await timeBar(30000)
+        const [link] = await page.$x("//a[contains(., 'Download Now')]")
+        if(!link) {
+          console.error(chalk.red('Couldn’t find “Download Now” link.'))
+        } else {
+          await client.send('Page.setDownloadBehavior', {
+            behavior: 'deny',
+          })
+          const response = await processStopper.wait({
+            link, page, timeout: argv.linkTimeout * 1000, chalk,
+          })
+          // await link.click()
+          // await page.waitForNavigation()
+          // await page.waitForTimeout(30000)
+          // await timeBar(30000)
+        }
+      } catch(err) {
+        console.error(`Loading Error: ${chalk.red(err.message)}`)
       }
     }
   } finally {
     const dls = path.join(process.env.HOME, 'Downloads')
-    await page._client.send('Page.setDownloadBehavior', {
+    await client.send('Page.setDownloadBehavior', {
       behavior: 'allow',
       downloadPath: dls,
     })
@@ -248,7 +331,15 @@ main()
   console.debug('Exited Normally')
   process.exit(0)
 })
-.catch((reason) => {
+.catch(async (reason) => {
+  if(client) {
+    const dls = path.join(process.env.HOME, 'Downloads')
+    await client.send('Page.setDownloadBehavior', {
+      behavior: 'allow',
+      downloadPath: dls,
+    })
+  }
+
   console.error(reason.message ?? reason)
   process.exit(23)
 })
