@@ -42,9 +42,7 @@ const timeBar = async (time) => {
 }
 
 const processStopper = {
-  done: false,
-  wait: ({ link, page, timeout: tout, chalk }) => {
-    this.timeout = tout
+  wait: ({ link, page, timeout, chalk }) => {
     if(!link) {
       console.warn('Error: Link not found.')
     } else {
@@ -56,14 +54,17 @@ const processStopper = {
 
           try {
             await Promise.all([
-              page.waitForNavigation({ timeout: tout ?? 5 * 60 * 1000 }),
+              page.waitForNavigation({
+                timeout: timeout ?? 5 * 60 * 1000
+              }),
               link.click(),
             ])
           } catch(err) {
-            console.error(chalk.red(err.message))
-          } finally {
-            // This doesn't work, and after is set once has no effect
-            self.done = true
+            console.error(
+              chalk.bold.hex('#FF8F34')('Error: ')
+              + chalk.red(err.message)
+            )
+            reject(err.message)
           }
         })
       } catch(err) {
@@ -71,16 +72,7 @@ const processStopper = {
       }
     }
   },
-  unblock: async ({ url, maxLoops = 10, chalk }) => {
-    let interval = 1000
-    for(let count = 1; !this.done && count <= maxLoops; ++count) {
-      console.info(
-        chalk.green(`Waiting: (${count.toString(16)}):`)
-        + ` [${chalk.hex('#FFA93E')(Math.round(interval / 1000))}s]: `
-        + chalk.blueBright(url)
-      )
-      await sleep(interval)
-    }
+  unblock: async ({ url }) => {
     this.resolve({ url, base: this.base })
   }
 }
@@ -116,6 +108,11 @@ const main = async () => {
       default: Infinity,
       alias: 'x',
     })
+    .option('start-page', {
+      type: 'number',
+      default: 1,
+      alias: 's',
+    })
     .option('page-timeout', {
       type: 'number',
       default: 10 * 60,
@@ -141,7 +138,7 @@ const main = async () => {
   const config = await configResponse.json()
   const endpoint = config.webSocketDebuggerUrl
 
-  console.info(`Connecting to: ${chalk.green(endpoint)}`)
+  console.info(`Connecting to: ${chalk.blueBright(endpoint)}`)
 
   const browser = (
     argv.headless ? (
@@ -158,7 +155,6 @@ const main = async () => {
   let count = 0
   let page = await browser.newPage()
   client = await page.target().createCDPSession()
-  let name
   let filename
 
   page.on('response', async (res) => {
@@ -168,7 +164,7 @@ const main = async () => {
 
       let [file] = url.pathname.split('/').slice(-1)
       if(file.endsWith('.zip')) {
-        console.debug(`Processing: ${chalk.green(url)}`)
+        console.debug(`Processing: ${chalk.hex('#9E78FF')(url)}`)
         console.debug(`  [${chalk.hex('#9E7922')(page.url())}]`)
 
         const creator = (await page.$eval(
@@ -226,7 +222,15 @@ const main = async () => {
 
 
   for(const urlString of argv.urls) {
-    const url = new URL(urlString)
+    const url = new URL(
+      `${
+        urlString
+      }${
+        urlString.includes('?') ? '&' : '?'
+      }page=${
+        argv.startPage
+      }`
+    )
     const basedir = path.join(__dirname, 'mirror', url.host)
 
     console.debug(`Processing: ${chalk.hex('#45DE29')(url)}`)
@@ -259,6 +263,11 @@ const main = async () => {
         + ` [${chalk.green(page.url())}]`
       )
       ;([next] = await page.$x("//a[contains(., 'Next page')]"))
+
+      if(!next) {
+        [next] = await page.$x("//a[contains(., 'Show more results')]")
+      }
+
       const className = (await next?.getProperty('className'))?.toString()
       if(!className || className.includes('is-disabled')) {
         next = null
@@ -285,7 +294,10 @@ const main = async () => {
   try {
     for(const url of urls) {
       try {
-        console.debug(`${chalk.hex('##FFAA00')(`${++count} / ${urls.length}`)}: Loading: ${chalk.green(url)}`)
+        console.debug(
+          `${chalk.hex('##FFAA00')(`${++count} / ${urls.length}`)}:`
+          + ` Loading: ${chalk.green(url)}`
+        )
         await page.goto(url, { waitUntil: 'networkidle0' })
 
         filename = url.replace(/.*\//g, '')
