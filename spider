@@ -237,10 +237,11 @@ const main = async () => {
 
     let next
     let pageNum = 1
+    const delta = Math.max(0, argv.maxPage - argv.startPage)
 
     await page.goto(url.toString(), { waitUntil: 'networkidle2' })
 
-    while(pageNum++ <= argv.maxPage && next !== null) {
+    while(pageNum++ <= delta && next !== null) {
       const selector = '.ez-resource-grid__item'
       const items = await page.$$(selector)
       const links = []
