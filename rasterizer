@@ -40,7 +40,10 @@ const argv = (
   .argv
 )
 
-if(!argv.url) throw new Error('--url is required')
+if(!argv.url) {
+  yargs.showHelp()
+  process.exit(2)
+}
 
 CDP(async (client) => {
   const { Page, Runtime } = client

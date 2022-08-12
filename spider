@@ -225,11 +225,13 @@ const main = async () => {
     const url = new URL(
       `${
         urlString
-      }${
-        urlString.includes('?') ? '&' : '?'
-      }page=${
-        argv.startPage
-      }`
+      }${/[?&]page=/i.test(urlString) ? '' : (
+        `${
+          urlString.includes('?') ? '&' : '?'
+        }page=${
+          argv.startPage
+        }`
+      )}`
     )
     const basedir = path.join(__dirname, 'mirror', url.host)
 
@@ -273,6 +275,8 @@ const main = async () => {
       if(!className || className.includes('is-disabled')) {
         next = null
       }
+
+      console.info({ next: (await next?.getProperty('href'))?.toString() })
 
       if(next === null) {
         console.debug(chalk.yellow(`No next page after #${count}.`))
