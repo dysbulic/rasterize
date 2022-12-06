@@ -155,7 +155,7 @@ const main = async () => {
   let count = 0
   let page = await browser.newPage()
   client = await page.target().createCDPSession()
-  let filename
+  let filename, name
 
   page.on('response', async (res) => {
     try {
@@ -249,11 +249,16 @@ const main = async () => {
       const links = []
       for(const elem of items) {
         const linkElem = await elem.$('.ez-resource-thumb__link')
-        const href = await linkElem.evaluate((l) => l.href)
+        const href = await linkElem?.evaluate((l) => l.href)
         const filename = `${href.replace(/^.*\//g, '')}.zip`
         if(glob.sync(path.join(basedir, '*', filename)).length > 0) {
           console.info(
             `${chalk.hex('#FF7B2E')(filename)} is present;`
+            + ` ${chalk.redBright('Skipping…')}`
+          )
+        } else if(/\/(png|photo)\//.test(href)) {
+          console.info(
+            `${chalk.hex('#7BFF2E')(filename)} is PNG;`
             + ` ${chalk.redBright('Skipping…')}`
           )
         } else {
@@ -275,8 +280,6 @@ const main = async () => {
       if(!className || className.includes('is-disabled')) {
         next = null
       }
-
-      console.info({ next: (await next?.getProperty('href'))?.toString() })
 
       if(next === null) {
         console.debug(chalk.yellow(`No next page after #${count}.`))
@@ -315,9 +318,9 @@ const main = async () => {
           name = null
         }
 
-        const [link] = await page.$x("//a[contains(., 'Download Now')]")
+        const [link] = await page.$x("//a[contains(text(), 'Download Now')]")
         if(!link) {
-          console.error(chalk.red('Couldn’t find “Download Now” link.'))
+          throw new  Error('Couldn’t find “Download Now” link.')
         } else {
           await client.send('Page.setDownloadBehavior', {
             behavior: 'deny',
@@ -331,7 +334,7 @@ const main = async () => {
           // await timeBar(30000)
         }
       } catch(err) {
-        console.error(`Loading Error: ${chalk.red(err.message)}`)
+        console.error(`Loading Error: ${chalk.red(err.message ?? err)}`)
       }
     }
   } finally {
