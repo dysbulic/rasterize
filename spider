@@ -42,15 +42,14 @@ const timeBar = async (time) => {
 }
 
 const processStopper = {
-  wait: ({ link, page, timeout, chalk }) => {
+  wait({ link, page, timeout, chalk }) {
     if(!link) {
       console.warn('Error: Link not found.')
     } else {
       try {
-        const self = this
         return new Promise(async (resolve, reject) => {
-          self.resolve = resolve
-          self.reject = reject
+          this.resolve = resolve
+          this.reject = reject
 
           try {
             await Promise.all([
@@ -72,12 +71,24 @@ const processStopper = {
       }
     }
   },
-  unblock: async ({ url }) => {
-    this.resolve({ url, base: this.base })
+  async unblock({ url, chalk: _chalk }) {
+    const { resolve, base } = this
+    resolve?.({ url, base })
   }
 }
 
 let client // accessed in main `catch`
+
+const allowDownloads = async () => {
+  if(client) {
+    const dls = path.join(process.env.HOME ?? '~', 'Downloads')
+    await client.send('Page.setDownloadBehavior', {
+      behavior: 'allow',
+      downloadPath: dls,
+    })
+  }
+}
+
 
 const main = async () => {
   process.on('SIGINT', () => { throw new Error('Interrupted') })
@@ -136,7 +147,14 @@ const main = async () => {
   const fetch = (await import('node-fetch')).default
   const configResponse = await fetch(argv.config)
   const config = await configResponse.json()
+  if(!(config instanceof Object)) throw new Error('Bad config.')
+  if(!('webSocketDebuggerUrl' in config)) {
+    throw new Error('Missing `webSocketDebuggerUrl` in `config`.')
+  }
   const endpoint = config.webSocketDebuggerUrl
+  if(typeof endpoint !== 'string') {
+    throw new Error(`"${typeof endpoint}" typed endpoint.`)
+  }
 
   console.info(`Connecting to: ${chalk.blueBright(endpoint)}`)
 
@@ -171,7 +189,7 @@ const main = async () => {
           '.contributor-details__contributor__name',
           (elem) => elem.textContent,
         ))
-        .trim()
+        ?.trim()
         .replace(/\//g, '／')
 
         const dlPath = path.resolve(`./mirror/${url.host}/${creator}`)
@@ -200,9 +218,9 @@ const main = async () => {
               const dl = await fetch(url.toString())
               const fileStream = fs.createWriteStream(out)
               await new Promise((resolve, reject) => {
-                dl.body.on('error', reject)
+                dl.body?.on('error', reject)
                 fileStream.on('finish', resolve)
-                dl.body.pipe(fileStream)
+                dl.body?.pipe(fileStream)
               })
             } catch(error) {
               console.error({ error })
@@ -220,6 +238,7 @@ const main = async () => {
     }
   })
 
+  if(!Array.isArray(argv.urls)) throw new Error('Bad `urls`.')
 
   for(const urlString of argv.urls) {
     const url = new URL(
@@ -246,10 +265,10 @@ const main = async () => {
     while(pageNum++ <= delta && next !== null) {
       const selector = '.ez-resource-grid__item'
       const items = await page.$$(selector)
-      const links = []
       for(const elem of items) {
         const linkElem = await elem.$('.ez-resource-thumb__link')
-        const href = await linkElem?.evaluate((l) => l.href)
+        const href = await linkElem?.evaluate((l) => 'href' in l && l.href)
+        if(typeof href !== 'string') throw new Error('Bad `href`.')
         const filename = `${href.replace(/^.*\//g, '')}.zip`
         if(glob.sync(path.join(basedir, '*', filename)).length > 0) {
           console.info(
@@ -299,67 +318,56 @@ const main = async () => {
     `Downloading ${urls.length} ${pluralize('URL', urls.length)}`
   ))
 
-  try {
-    for(const url of urls) {
-      try {
-        console.debug(
-          `${chalk.hex('##FFAA00')(`${++count} / ${urls.length}`)}:`
-          + ` Loading: ${chalk.green(url)}`
-        )
-        await page.goto(url, { waitUntil: 'networkidle0' })
+  for(const url of urls) {
+    try {
+      console.debug(
+        `${chalk.hex('##FFAA00')(`${++count} / ${urls.length}`)}:`
+        + ` Loading: ${chalk.green(url)}`
+      )
+      await page.goto(url, { waitUntil: 'networkidle0' })
 
-        filename = url.replace(/.*\//g, '')
+      filename = url.replace(/.*\//g, '')
 
-        const [desc] = await page.$x("//meta[@itemprop='description']")
-        if(desc) {
-          name = await (await desc.getProperty('content')).jsonValue()
-        } else {
-          console.debug('Couldn’t find description!')
-          name = null
-        }
-
-        const [link] = await page.$x("//a[contains(text(), 'Download Now')]")
-        if(!link) {
-          throw new  Error('Couldn’t find “Download Now” link.')
-        } else {
-          await client.send('Page.setDownloadBehavior', {
-            behavior: 'deny',
-          })
-          const response = await processStopper.wait({
-            link, page, timeout: argv.linkTimeout * 1000, chalk,
-          })
-          // await link.click()
-          // await page.waitForNavigation()
-          // await page.waitForTimeout(30000)
-          // await timeBar(30000)
-        }
-      } catch(err) {
-        console.error(`Loading Error: ${chalk.red(err.message ?? err)}`)
+      const [desc] = await page.$x("//meta[@itemprop='description']")
+      if(desc) {
+        name = await (await desc.getProperty('content')).jsonValue()
+      } else {
+        console.debug('Couldn’t find description!')
+        name = null
       }
+
+      const [link] = await page.$x("//a[contains(text(), 'Download Now')]")
+      if(!link) {
+        throw new  Error('Couldn’t find “Download Now” link.')
+      } else {
+        await client.send('Page.setDownloadBehavior', {
+          behavior: 'deny',
+        })
+        await processStopper.wait({
+          link, page, timeout: argv.linkTimeout * 1000, chalk,
+        })
+        // await link.click()
+        // await page.waitForNavigation()
+        // await page.waitForTimeout(30000)
+        // await timeBar(30000)
+      }
+    } catch(err) {
+      console.error(`Loading Error: ${chalk.red(err.message ?? err)}`)
     }
-  } finally {
-    const dls = path.join(process.env.HOME, 'Downloads')
-    await client.send('Page.setDownloadBehavior', {
-      behavior: 'allow',
-      downloadPath: dls,
-    })
   }
 }
 
 main()
 .then(() => {
   console.debug('Exited Normally')
-  process.exit(0)
+  return 0
 })
 .catch(async (reason) => {
-  if(client) {
-    const dls = path.join(process.env.HOME, 'Downloads')
-    await client.send('Page.setDownloadBehavior', {
-      behavior: 'allow',
-      downloadPath: dls,
-    })
-  }
-
-  console.error(reason.message ?? reason)
-  process.exit(23)
+  console.error(`Error: "${reason.message ?? reason}"`)
+  return 23
+})
+.finally(async (status) => {
+  console.debug(`Reenabling Downloads & Exiting #${status}…`)
+  await allowDownloads()
+  process.exit(status)
 })
