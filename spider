@@ -29,7 +29,7 @@ const timeBar = async (time) => {
   })
   bar.start(time, 0)
 
-  const step = time / 80
+  const step = 1000
   let current
 
   for(current = 0; current < time; current += step) {
@@ -119,10 +119,10 @@ const main = async () => {
       default: Infinity,
       alias: 'x',
     })
-    .option('start-page', {
+    .option('min-page', {
       type: 'number',
       default: 1,
-      alias: 's',
+      alias: 'n',
     })
     .option('page-timeout', {
       type: 'number',
@@ -135,6 +135,12 @@ const main = async () => {
       default: 30,
       alias: 'o',
       description: 'Number of seconds to wait on link clicks.'
+    })
+    .option('click-delay', {
+      type: 'number',
+      default: 7,
+      alias: 'd',
+      description: 'Number of seconds to wait between link clicks.'
     })
     .demandOption('urls')
     .alias('h', 'help')
@@ -227,7 +233,7 @@ const main = async () => {
             }
           }
         } finally {
-          await timeBar(5000)
+          await timeBar(argv.clickDelay * 1000)
           await processStopper.unblock({
             url: url.toString(), chalk
           })
@@ -248,7 +254,7 @@ const main = async () => {
         `${
           urlString.includes('?') ? '&' : '?'
         }page=${
-          argv.startPage
+          argv.minPage
         }`
       )}`
     )
@@ -258,7 +264,7 @@ const main = async () => {
 
     let next
     let pageNum = 1
-    const delta = Math.max(0, argv.maxPage - argv.startPage)
+    const delta = Math.max(0, argv.maxPage - argv.minPage)
 
     await page.goto(url.toString(), { waitUntil: 'networkidle2' })
 
@@ -275,9 +281,9 @@ const main = async () => {
             `${chalk.hex('#FF7B2E')(filename)} is present;`
             + ` ${chalk.redBright('Skipping…')}`
           )
-        } else if(/\/(png|photo)\//.test(href)) {
+        } else if(/\/(photo|video)\//.test(href)) {
           console.info(
-            `${chalk.hex('#7BFF2E')(filename)} is PNG;`
+            `${chalk.hex('#7BFF2E')(filename)} is a photo;`
             + ` ${chalk.redBright('Skipping…')}`
           )
         } else {
@@ -304,9 +310,10 @@ const main = async () => {
         console.debug(chalk.yellow(`No next page after #${count}.`))
       } else {
         await Promise.all([
-          page.waitForNavigation({ timeout: argv.linkTimeout * 1000 }),
+          page.waitForNavigation(
+            { timeout: (argv.clickDelay + argv.linkTimeout) * 1000 }
+          ),
           next.click(),
-          timeBar(3000),
         ])
       }
     }
@@ -320,8 +327,12 @@ const main = async () => {
 
   for(const url of urls) {
     try {
+      const pgperday = (
+        24 * 60 * 60 / argv.clickDelay
+      )
       console.debug(
-        `${chalk.hex('##FFAA00')(`${++count} / ${urls.length}`)}:`
+          chalk.hex('##FA0')(`${++count} / ${urls.length}`)
+        + `${chalk.hex('#2A7177')(`@${Math.round(pgperday)}`)}dl⁄day:`
         + ` Loading: ${chalk.green(url)}`
       )
       await page.goto(url, { waitUntil: 'networkidle0' })
@@ -344,7 +355,7 @@ const main = async () => {
           behavior: 'deny',
         })
         await processStopper.wait({
-          link, page, timeout: argv.linkTimeout * 1000, chalk,
+          link, page, timeout: (argv.clickDelay + argv.linkTimeout) * 1000, chalk,
         })
         // await link.click()
         // await page.waitForNavigation()
