@@ -142,6 +142,12 @@ const main = async () => {
       alias: 'd',
       description: 'Number of seconds to wait between link clicks.'
     })
+    .option('verbose', {
+      type: 'boolean',
+      default: false,
+      alias: 'v',
+      description: 'Print more information.'
+    })
     .demandOption('urls')
     .alias('h', 'help')
     .help()
@@ -183,60 +189,62 @@ const main = async () => {
 
   page.on('response', async (res) => {
     try {
-      const request = await res.request()
-      const url = new URL(request.url())
+      if(res.status() < 300) {
+        const request = await res.request()
+        const url = new URL(request.url())
 
-      let [file] = url.pathname.split('/').slice(-1)
-      if(file.endsWith('.zip')) {
-        console.debug(`Processing: ${chalk.hex('#9E78FF')(url)}`)
-        console.debug(`  [${chalk.hex('#9E7922')(page.url())}]`)
+        let [file] = url.pathname.split('/').slice(-1)
+        if(file.endsWith('.zip')) {
+          console.debug(`Processing: ${chalk.hex('#9E78FF')(url)}`)
+          console.debug(`  [${chalk.hex('#9E7922')(page.url())}]`)
 
-        const creator = (await page.$eval(
-          '.contributor-details__contributor__name',
-          (elem) => elem.textContent,
-        ))
-        ?.trim()
-        .replace(/\//g, '／')
+          const creator = (await page.$eval(
+            '.contributor-details__contributor__name',
+            (elem) => elem.textContent,
+          ))
+          ?.trim()
+          .replace(/\//g, '／')
 
-        const dlPath = path.resolve(`./mirror/${url.host}/${creator}`)
-        try {
-          await fs.promises.access(dlPath, fs.constants.F_OK)
-        } catch(dne) {
-          console.debug(chalk.hex('#FF5AD9')(`Creating: ${dlPath}`))
-          await fs.promises.mkdir(dlPath, { recursive: true })
-        }
-
-        filename += '.zip'
-        try {
-          await fs.promises.access(
-            path.join(dlPath, file), fs.constants.F_OK
-          )
-          console.error(chalk.red(`Renaming ${file} to ${filename}`))
-          fs.renameSync(path.join(dlPath, file), path.join(dlPath, filename))
-        } catch(dne) {
-          const out = path.join(dlPath, filename)
+          const dlPath = path.resolve(`./mirror/${url.host}/${creator}`)
           try {
-            await fs.promises.access(out, fs.constants.F_OK)
-            console.error(chalk.red(`${out} Exists; Skipping.`))
+            await fs.promises.access(dlPath, fs.constants.F_OK)
           } catch(dne) {
-            console.debug(`Downloading To: ${chalk.hex('#8BB8DE')(out)}`)
-            try {
-              const dl = await fetch(url.toString())
-              const fileStream = fs.createWriteStream(out)
-              await new Promise((resolve, reject) => {
-                dl.body?.on('error', reject)
-                fileStream.on('finish', resolve)
-                dl.body?.pipe(fileStream)
-              })
-            } catch(error) {
-              console.error({ error })
-            }
+            console.debug(chalk.hex('#FF5AD9')(`Creating: ${dlPath}`))
+            await fs.promises.mkdir(dlPath, { recursive: true })
           }
-        } finally {
-          await timeBar(argv.clickDelay * 1000)
-          await processStopper.unblock({
-            url: url.toString(), chalk
-          })
+
+          if(!filename.endsWith('.zip')) filename += '.zip'
+          try {
+            await fs.promises.access(
+              path.join(dlPath, file), fs.constants.F_OK
+            )
+            console.error(chalk.red(`Renaming ${file} to ${filename}`))
+            fs.renameSync(path.join(dlPath, file), path.join(dlPath, filename))
+          } catch(dne) {
+            const out = path.join(dlPath, filename)
+            try {
+              await fs.promises.access(out, fs.constants.F_OK)
+              console.error(chalk.red(`${out} Exists; Skipping.`))
+            } catch(dne) {
+              console.debug(`Downloading To: ${chalk.hex('#8BB8DE')(out)}`)
+              try {
+                const dl = await fetch(url.toString())
+                const fileStream = fs.createWriteStream(out)
+                await new Promise((resolve, reject) => {
+                  dl.body?.on('error', reject)
+                  fileStream.on('finish', resolve)
+                  dl.body?.pipe(fileStream)
+                })
+              } catch(error) {
+                console.error({ error })
+              }
+            }
+          } finally {
+            await timeBar(argv.clickDelay * 1000)
+            await processStopper.unblock({
+              url: url.toString(), chalk
+            })
+          }
         }
       }
     } catch(err) {
@@ -258,8 +266,6 @@ const main = async () => {
         }`
       )}`
     )
-    const basedir = path.join(__dirname, 'mirror', url.host)
-
     console.debug(`Processing: ${chalk.hex('#45DE29')(url)}`)
 
     let next
@@ -276,9 +282,24 @@ const main = async () => {
         const href = await linkElem?.evaluate((l) => 'href' in l && l.href)
         if(typeof href !== 'string') throw new Error('Bad `href`.')
         const filename = `${href.replace(/^.*\//g, '')}.zip`
-        if(glob.sync(path.join(basedir, '*', filename)).length > 0) {
+        const urlWildcard = url.host.replace(/^.*\.([^.]+)\.([^.]+)$/, '*.$1.$2')
+        if(argv.verbose) {
           console.info(
-            `${chalk.hex('#FF7B2E')(filename)} is present;`
+            chalk.hex('#639DF4')('Checking: ')
+            + chalk.hex('#FFAAFF')(`${urlWildcard}: ${filename}`)
+          )
+        }
+        let [match] = glob.sync(path.join(
+          __dirname, 'mirror', urlWildcard, '*', filename
+        ))
+        if(!match) {
+          [match] = glob.sync(path.join(
+            __dirname, 'mirror', '*', '*', filename
+          ))
+        }
+        if(match) {
+          console.info(
+            `${chalk.hex('#FF7B2E')(match.replace(__dirname, ''))} is present;`
             + ` ${chalk.redBright('Skipping…')}`
           )
         } else if(/\/(photo|video)\//.test(href)) {
