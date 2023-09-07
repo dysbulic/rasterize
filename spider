@@ -2,7 +2,7 @@
 
 const fs = require('fs')
 const path = require('path')
-const yargs = require('yargs/yargs')
+const yargs = require('yargs')
 const puppeteer = require('puppeteer')
 const pluralize = require('pluralize')
 const { URL } = require('url')
@@ -99,15 +99,14 @@ const main = async () => {
     .command(
       '* [urls..]',
       (
-        "This program is for downloading and saving the art from\n"
-        + "Vecteezy.com using Puppeteer.\n\n"
-        + "It requires “google-chrome --remote-debugging-port=9222”."
+        "This program is for downloading and saving the art from Vecteezy.com using Puppeteer.\n\n"
+        + "It requires `google-chrome --remote-debugging-port=9222` be run prior."
       ),
     )
     .option('headless', {
       type: 'boolean',
       default: false,
-      alias: 'l',
+      alias: 's',
     })
     .option('config', {
       type: 'string',
@@ -123,6 +122,12 @@ const main = async () => {
       type: 'number',
       default: 1,
       alias: 'n',
+    })
+    .option('total', {
+      type: 'number',
+      default: null,
+      alias: 'l',
+      description: 'Total number of URLs to download.'
     })
     .option('page-timeout', {
       type: 'number',
@@ -193,7 +198,7 @@ const main = async () => {
         const request = await res.request()
         const url = new URL(request.url())
 
-        let [file] = url.pathname.split('/').slice(-1)
+        let file = url.pathname.split('/').at(-1) ?? (() => { throw new Error(`Bad \`url\`: ${url}.`) })()
         if(file.endsWith('.zip')) {
           console.debug(`Processing: ${chalk.hex('#9E78FF')(url)}`)
           console.debug(`  [${chalk.hex('#9E7922')(page.url())}]`)
@@ -205,7 +210,7 @@ const main = async () => {
           ?.trim()
           .replace(/\//g, '／')
 
-          const dlPath = path.resolve(`./mirror/${url.host}/${creator}`)
+          const dlPath = `./mirror/${url.host}/${creator}`
           try {
             await fs.promises.access(dlPath, fs.constants.F_OK)
           } catch(dne) {
@@ -226,7 +231,7 @@ const main = async () => {
               await fs.promises.access(out, fs.constants.F_OK)
               console.error(chalk.red(`${out} Exists; Skipping.`))
             } catch(dne) {
-              console.debug(`Downloading To: ${chalk.hex('#8BB8DE')(out)}`)
+              console.debug(`${chalk.hex('#60D700')(new Date().toISOString())}: Downloading To: ${chalk.hex('#8BB8DE')(out)}`)
               try {
                 const dl = await fetch(url.toString())
                 const fileStream = fs.createWriteStream(out)
@@ -274,7 +279,7 @@ const main = async () => {
 
     await page.goto(url.toString(), { waitUntil: 'networkidle2' })
 
-    while(pageNum++ <= delta && next !== null) {
+    while(pageNum++ <= delta && (argv.total == null || urls.length < argv.total) && next !== null) {
       const selector = '.ez-resource-grid__item'
       const items = await page.$$(selector)
       for(const elem of items) {
@@ -285,7 +290,7 @@ const main = async () => {
         const urlWildcard = url.host.replace(/^.*\.([^.]+)\.([^.]+)$/, '*.$1.$2')
         if(argv.verbose) {
           console.info(
-            chalk.hex('#639DF4')('Checking: ')
+            chalk.hex('#639DF4')(`Checking #${urls.length + 1}: `)
             + chalk.hex('#FFAAFF')(`${urlWildcard}: ${filename}`)
           )
         }
@@ -313,7 +318,7 @@ const main = async () => {
       }
       console.debug(
         `  ${chalk.hex('#AB32DE')(`Page #${++count}`)}`
-        + ` (${chalk.hex('#FFAAFF')(`${urls.length} ${pluralize('URL', urls.length)})`)})`
+        + ` (${chalk.hex('#FFAAFF')(pluralize('URL', urls.length, true))})`
         + ` [${chalk.green(page.url())}]`
       )
       ;([next] = await page.$x("//a[contains(., 'Next page')]"))
@@ -343,7 +348,7 @@ const main = async () => {
   count = 0
   urls = [...new Set(urls)]
   console.debug(chalk.hex('#C1A40F')(
-    `Downloading ${urls.length} ${pluralize('URL', urls.length)}`
+    `Downloading ${pluralize('URL', urls.length, true)}`
   ))
 
   for(const url of urls) {
