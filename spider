@@ -276,6 +276,7 @@ const main = async () => {
     let next
     let pageNum = 1
     const delta = Math.max(0, argv.maxPage - argv.minPage)
+    let total = 0
 
     await page.goto(url.toString(), { waitUntil: 'networkidle2' })
 
@@ -290,7 +291,11 @@ const main = async () => {
         const urlWildcard = url.host.replace(/^.*\.([^.]+)\.([^.]+)$/, '*.$1.$2')
         if(argv.verbose) {
           console.info(
-            chalk.hex('#639DF4')(`Checking #${urls.length + 1}: `)
+            chalk.hex('#639DF4')('Checking ')
+            + chalk.hex('#007348')(`#${urls.length + 1}`)
+            + chalk.hex('#EBC500')('/')
+            + chalk.hex('#CB61F6')(++total)
+            + chalk.hex('#EBC500')(': ')
             + chalk.hex('#FFAAFF')(`${urlWildcard}: ${filename}`)
           )
         }
@@ -322,7 +327,9 @@ const main = async () => {
         + ` [${chalk.green(page.url())}]`
       )
       ;([next] = await page.$x("//a[contains(., 'Next page')]"))
-
+      if(!next) {
+        [next] = await page.$x("//a[contains(., 'Next Page')]")
+      }
       if(!next) {
         [next] = await page.$x("//a[contains(., 'Show more results')]")
       }
