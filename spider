@@ -125,7 +125,7 @@ const main = async () => {
     })
     .option('total', {
       type: 'number',
-      default: null,
+      default: Number.POSITIVE_INFINITY,
       alias: 'l',
       description: 'Total number of URLs to download.'
     })
@@ -231,7 +231,10 @@ const main = async () => {
               await fs.promises.access(out, fs.constants.F_OK)
               console.error(chalk.red(`${out} Exists; Skipping.`))
             } catch(dne) {
-              console.debug(`${chalk.hex('#60D700')(new Date().toISOString())}: Downloading To: ${chalk.hex('#8BB8DE')(out)}`)
+              console.debug(
+                `${chalk.hex('#60D700')(new Date().toISOString())}: `
+                + `Downloading To: ${chalk.hex('#8BB8DE')(out)}`
+              )
               try {
                 const dl = await fetch(url.toString())
                 const fileStream = fs.createWriteStream(out)
@@ -292,7 +295,7 @@ const main = async () => {
         if(argv.verbose) {
           console.info(
             chalk.hex('#639DF4')('Checking ')
-            + chalk.hex('#007348')(`#${urls.length + 1}`)
+            + chalk.hex(urls.length < argv.total ? '#730022' : '#12CD43')(`#${urls.length + 1}`)
             + chalk.hex('#EBC500')('/')
             + chalk.hex('#CB61F6')(++total)
             + chalk.hex('#EBC500')(': ')
