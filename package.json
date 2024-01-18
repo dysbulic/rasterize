@@ -6,6 +6,7 @@
   "author": "dysbulic <dys@dhappy.org>",
   "license": "CC0-1.0",
   "main": "rasterizer",
+  "type": "module",
   "dependencies": {
     "chalk": "^5.0.1",
     "chrome-remote-interface": "^0.29.0",
@@ -16,7 +17,7 @@
     "pluralize": "^8.0.0",
     "puppeteer": "^13.5.2",
     "svg-pathdata": "^6.0.3",
-    "yargs": "^16.2.0"
+    "yargs": "^17.7.2"
   },
   "packageManager": "yarn@3.2.0"
 }

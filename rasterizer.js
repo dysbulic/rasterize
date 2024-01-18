@@ -1,55 +1,73 @@
 #!/usr/bin/env node
 
-const CDP = require('chrome-remote-interface')
-const fs = require('fs')
-const yargs = require('yargs')
+import { default as CRI } from 'chrome-remote-interface'
+import fs from 'node:fs'
+import yargs from 'yargs/yargs'
+import path from 'node:path'
 
 const argv = (
-  yargs
+  await yargs(process.argv.slice(2))
   .option('iters', {
     alias: 'i',
-    description: 'Number of iterations [default 20]',
+    default: 20,
+    description: 'Number of iterations',
     type: 'number',
   })
   .option('url', {
     alias: 'u',
     description: 'URL to load [required]',
     type: 'string',
+    required: true,
   })
   .option('prefix', {
     alias: 'p',
-    description: 'Image filename prefix [default "shot"]',
+    default: 'shot',
+    description: 'Image filename prefix',
     type: 'string',
   })
   .option('width', {
     alias: 'w',
-    description: 'Width to render [default 200]',
+    default: 200,
+    description: 'Width to render',
     type: 'number',
   })
   .option('height', {
     alias: 'h',
-    description: 'Height to render [default 200]',
+    default: 200,
+    description: 'Height to render',
     type: 'number',
   })
   .option('drop', {
     alias: 'd',
-    description: 'Frames to drop between captures [defualt 0]',
+    default: 0,
+    description: 'Frames to drop between captures',
     type: 'number',
   })
+  .option('verbose', {
+    alias: 'v',
+    description: 'Print additional information',
+  })
   .help()
+  .showHelpOnFail(true)
   .argv
 )
 
 if(!argv.url) {
-  yargs.showHelp()
-  process.exit(2)
+  throw new Error('URL is required.')
+}
+if(!/^\w+:\/\//.test(argv.url)) {
+  // @ts-ignore
+  argv.url = `file://${path.join(process.cwd(), argv.url)}`
 }
 
-CDP(async (client) => {
-  const { Page, Runtime } = client
+if(argv.verbose) {
+  console.debug(`Args: ${JSON.stringify(argv, null, 2)}`)
+}
+
+CRI({}, async (client) => {
+  const { Page } = client
   const {
-    url, iters = 20, width = 200, height = 200,
-    prefix = 'shot', drop = 0,
+    url, iters, width, height, prefix, drop,
   } = argv
   const color = { r: 255, g: 255, b: 255, a: 0 }
 
@@ -57,10 +75,13 @@ CDP(async (client) => {
     await Page.enable()
     await client.Emulation.setDeviceMetricsOverride({
       width, height,
-      fitWindow: true,
+      // fitWindow: true,
       deviceScaleFactor: 1,
       mobile: false
     })
+
+    if(argv.verbose) console.info(`Rendering: ${url}`)
+
     await Page.navigate({ url })
     await Page.loadEventFired()
     await client.Emulation.setDefaultBackgroundColorOverride({
@@ -69,25 +90,21 @@ CDP(async (client) => {
     await Page.startScreencast({ format: 'png', everyNthFrame: 1 });
     let counter = 1
     while(counter <= iters) {
-      const { data, metadata, sessionId } = (
+      const { data, sessionId } = (
         await Page.screencastFrame()
       )
-      const out = `${prefix}.${(counter++).toString().padStart(3, '0')}.png`
+      const out = `${prefix}.${(counter++).toString().padStart(4, '0')}.png`
       fs.writeFileSync(
         out, Buffer.from(data, 'base64')
       )
-      console.info(`Creating: ${out}`)
+      if(argv.verbose) console.info(`Creating: ${out}`)
       await Page.screencastFrameAck({ sessionId })
       for(let i = 1; i <= drop; i++) {
-        const { data, metadata, sessionId } = (
-          await Page.screencastFrame()
-        )
+        const { sessionId } = await Page.screencastFrame()
         await Page.screencastFrameAck({ sessionId })
       }
     }
   } finally {
     client.close()
   }
-}).on('error', (err) => {
-  console.error(err)
 })

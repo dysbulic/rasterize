@@ -8,8 +8,8 @@ Description: Spiders a Vecteezy URL at $PERDAY images per day.
 Usage: $0 [options] <url>
 
 Wraps:
-$(./spider --help | sed 's/^/  /')
+$(./spider.js --help | sed 's/^/  /')
 EOF
 
-./spider -d $(((24 * 60 * 60) / 195)) "$@"
+./spider.js -d $(((24 * 60 * 60) / 195)) "$@"
 

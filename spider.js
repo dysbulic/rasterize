@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 
-const fs = require('fs')
-const path = require('path')
-const yargs = require('yargs')
-const puppeteer = require('puppeteer')
-const pluralize = require('pluralize')
-const { URL } = require('url')
-const progress = require('cli-progress')
-const glob = require('glob')
+import fs from 'fs'
+import path from 'path'
+import yargs from 'yargs'
+import puppeteer from 'puppeteer'
+import pluralize from 'pluralize'
+import { URL } from 'url'
+import progress from 'cli-progress'
+import glob from 'glob'
+
+const dirname = path.dirname(new URL(import.meta.url).pathname)
 
 const sleep = (timeout) => (
   new Promise((r) => setTimeout(r, timeout))
@@ -126,13 +128,13 @@ const main = async () => {
     .option('total', {
       type: 'number',
       default: Number.POSITIVE_INFINITY,
-      alias: 'l',
+      alias: 't',
       description: 'Total number of URLs to download.'
     })
     .option('page-timeout', {
       type: 'number',
       default: 10 * 60,
-      alias: 't',
+      alias: 'p',
       description: 'Number of seconds to wait on page operations.'
     })
     .option('link-timeout', {
@@ -262,7 +264,10 @@ const main = async () => {
 
   if(!Array.isArray(argv.urls)) throw new Error('Bad `urls`.')
 
-  for(const urlString of argv.urls) {
+  for(let urlString of argv.urls) {
+    if(!/^(https?:)?\/\//.test(urlString)) {
+      urlString = `https://vecteezy.com/search?qterm=${encodeURI(urlString)}`
+    }
     const url = new URL(
       `${
         urlString
@@ -303,16 +308,16 @@ const main = async () => {
           )
         }
         let [match] = glob.sync(path.join(
-          __dirname, 'mirror', urlWildcard, '*', filename
+          dirname, 'mirror', urlWildcard, '*', filename
         ))
         if(!match) {
           [match] = glob.sync(path.join(
-            __dirname, 'mirror', '*', '*', filename
+            dirname, 'mirror', '*', '*', filename
           ))
         }
         if(match) {
           console.info(
-            `${chalk.hex('#FF7B2E')(match.replace(__dirname, ''))} is present;`
+            `${chalk.hex('#FF7B2E')(match.replace(dirname, ''))} is present;`
             + ` ${chalk.redBright('Skipping…')}`
           )
         } else if(/\/(photo|video)\//.test(href)) {
