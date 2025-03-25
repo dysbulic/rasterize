@@ -102,7 +102,8 @@ const main = async () => {
       '* [urls..]',
       (
         "This program is for downloading and saving the art from Vecteezy.com using Puppeteer.\n\n"
-        + "It requires `google-chrome --remote-debugging-port=9222` be run prior."
+        + "It requires `google-chrome --remote-debugging-port=9222` be run prior.\n\n"
+        + `Ran: ${process.argv.join(' ')}`
       ),
     )
     .option('headless', {
@@ -127,33 +128,48 @@ const main = async () => {
     })
     .option('total', {
       type: 'number',
-      default: Number.POSITIVE_INFINITY,
+      default: 1_000,
       alias: 't',
-      description: 'Total number of URLs to download.'
+      description: 'Total number of URLs to download.',
     })
     .option('page-timeout', {
       type: 'number',
       default: 10 * 60,
       alias: 'p',
-      description: 'Number of seconds to wait on page operations.'
+      description: 'Number of seconds to wait on page operations.',
     })
-    .option('link-timeout', {
+    .option('per-day', {
+      type: 'number',
+      default: null,
+      alias: 'd',
+      description: 'Number of images to download per day. (Overrides `link-wait` if specified.)',
+    })
+    .option('link-wait', {
       type: 'number',
       default: 30,
-      alias: 'o',
-      description: 'Number of seconds to wait on link clicks.'
+      alias: 'w',
+      description: 'Number of seconds to wait on link clicks.',
     })
     .option('click-delay', {
       type: 'number',
       default: 7,
-      alias: 'd',
-      description: 'Number of seconds to wait between link clicks.'
+      alias: 'c',
+      description: 'Number of seconds to wait between link clicks.',
+    })
+    .option('fixed', {
+      type: 'boolean',
+      default: false,
+      alias: 'f',
+      description: (
+        'Cut the images to be spidered off at `total`'
+        + ' rather than completing the page.'
+      ),
     })
     .option('verbose', {
       type: 'boolean',
       default: false,
       alias: 'v',
-      description: 'Print more information.'
+      description: 'Print more information.',
     })
     .demandOption('urls')
     .alias('h', 'help')
@@ -173,6 +189,10 @@ const main = async () => {
   const endpoint = config.webSocketDebuggerUrl
   if(typeof endpoint !== 'string') {
     throw new Error(`"${typeof endpoint}" typed endpoint.`)
+  }
+
+  if(argv.perDay) {
+    argv.clickDelay = Math.ceil((24 * 60 * 60) / argv.perDay)
   }
 
   console.info(`Connecting to: ${chalk.blueBright(endpoint)}`)
@@ -288,19 +308,25 @@ const main = async () => {
 
     await page.goto(url.toString(), { waitUntil: 'networkidle2' })
 
+    outer:
     while(pageNum++ <= delta && (argv.total == null || urls.length < argv.total) && next !== null) {
       const selector = '.ez-resource-grid__item'
       const items = await page.$$(selector)
       for(const elem of items) {
         const linkElem = await elem.$('.ez-resource-thumb__link')
         const href = await linkElem?.evaluate((l) => 'href' in l && l.href)
-        if(typeof href !== 'string') throw new Error('Bad `href`.')
+        if(typeof href !== 'string') {
+          console.error(`Bad \`href\` (${typeof href}).`)
+          continue
+        }
         const filename = `${href.replace(/^.*\//g, '')}.zip`
         const urlWildcard = url.host.replace(/^.*\.([^.]+)\.([^.]+)$/, '*.$1.$2')
         if(argv.verbose) {
           console.info(
             chalk.hex('#639DF4')('Checking ')
             + chalk.hex(urls.length < argv.total ? '#730022' : '#12CD43')(`#${urls.length + 1}`)
+            + chalk.hex('#855')(`(${urls.length - argv.total})`)
+
             + chalk.hex('#EBC500')('/')
             + chalk.hex('#CB61F6')(++total)
             + chalk.hex('#EBC500')(': ')
@@ -327,6 +353,9 @@ const main = async () => {
           )
         } else {
           urls.push(href)
+          if(urls.length >= argv.total && argv.fixed) {
+            break outer
+          }
         }
       }
       console.debug(
@@ -350,10 +379,9 @@ const main = async () => {
       if(next === null) {
         console.debug(chalk.yellow(`No next page after #${count}.`))
       } else {
+        let timeout = Math.max(argv.clickDelay, argv.linkTimeout) * 1000
         await Promise.all([
-          page.waitForNavigation(
-            { timeout: (argv.clickDelay + argv.linkTimeout) * 1000 }
-          ),
+          page.waitForNavigation({ timeout }),
           next.click(),
         ])
       }
@@ -388,7 +416,7 @@ const main = async () => {
         name = null
       }
 
-      const [link] = await page.$x("//a[contains(text(), 'Download Now')]")
+      const [link] = await page.$x("//button[contains(text(), 'Download Now')]")
       if(!link) {
         throw new  Error('Couldn’t find “Download Now” link.')
       } else {
