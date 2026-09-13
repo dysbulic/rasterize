@@ -415,10 +415,10 @@ async function download({ urls, browser, argv }) {
         dlURL.pathname.split('/').at(-1),
       )
 
-      fs.copyFile(saveFull, destFull, unwait)
-      fs.unlinkSync(saveFull)
-
-      return { downloaded: saveFull, saved: destFull }
+      fs.copyFile(saveFull, destFull, () => {
+        fs.unlinkSync(saveFull)
+        unwait({ downloaded: saveFull, saved: destFull })
+      })
     }
   })
 
