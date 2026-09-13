@@ -54,8 +54,18 @@ const main = async () => {
     )
   )
 
+  let count = 0
   for await (const url of images({ argv, browser })) {
-    await download({ url, browser, argv })
+    console.debug(
+      chalk.hex('#FA0')(`${++count} / ${argv.total}`)
+      + `${chalk.hex('#2A7177')(`@${Math.round(argv.perDay)}`)}dl⁄day:`
+      + ` Loading: ${chalk.green(url)}`
+    )
+    const { saved } = await download({ url, browser, argv })
+    console.debug(
+      chalk.bgWhite.gray('Saved To:')
+      + ` ${chalk.bgWhite.hex('#ED6B1D')(saved)}`
+    )
   }
 }
 
@@ -84,9 +94,9 @@ const timeBar = async (time) => {
     } else if(percent <= 50) {
       return '38;2;225;62;28;48;5;13'
     } else if(percent <= 75) {
-      return '38;5;57;48;5;76'
+      return '38;5;57;48;5;4'
     } else {
-      return '38;2;44;196;43;48;5;76'
+      return '38;2;44;196;43;48;5;45'
     }
   }
   const format = (options, params) => {
@@ -336,10 +346,6 @@ async function* images({ argv, browser }) {
             + ` ${chalk.redBright('Skipping…')}`
           )
         } else {
-          // urls.push(new URL(href))
-          // if(urls.length >= argv.total && argv.fixed) {
-          //   break outer
-          // }
           yield new URL(href)
           if(urls.length >= argv.total && argv.fixed) {
             break outer
@@ -374,76 +380,76 @@ async function* images({ argv, browser }) {
   }
 }
 
-/**
- * Clicking on the "Download" button triggers a download to the default
- * download location. To download to a custom location, downloading is
- * temporarily disabled, the click then triggers `page.on('response', …)`
- * where the `response.request.url()` can be used to get the desired file.
- */
 let downloadPage
-async function download({ url, browser, argv }) {
-  const downloadPath = path.resolve(os.homedir(), 'Downloads')
 
-  let sourceURL
-  let dlURL
-  let guid
-  let creator
-  let unwait
+class State {
+  dlURL
+  guid
+  creator
+  unwait
+  sourceURL
+}
+const state = new State()
+
+async function download({ url: sourceURL, browser, argv }) {
+  const downloadPath = path.resolve(os.homedir(), 'Downloads')
+  state.sourceURL = sourceURL
 
   if(downloadPage == null) {
     downloadPage = await browser.newPage()
     const client = await downloadPage.createCDPSession()
     await client.send('Browser.setDownloadBehavior', {
-      behavior: 'allow',   // file is named by GUID, no collisions
+      behavior: 'allow',
       downloadPath,
-      eventsEnabled: true, // required, off by default
+      eventsEnabled: true, // necessary; false by default
     })
 
-    client.on('Browser.downloadWillBegin', ({ url, guid: target }) => {
-      guid = target
-      dlURL = new URL(url)
-    })
+    client.on(
+      'Browser.downloadWillBegin',
+      ({ url, guid: target }) => {
+        state.guid = target
+        state.dlURL = new URL(url)
+      }
+    )
     client.on('Browser.downloadProgress', (evt) => {
-      if(evt.guid === guid && evt.state === 'completed') {
-        if(!creator) throw new Error('`creator` not set.')
-        [dlURL, sourceURL].forEach((url) => {
+      if(evt.guid === state.guid && evt.state === 'completed') {
+        if(!state.creator) throw new Error('`creator` not set.')
+        Object.entries(
+          { dlURL: state.dlURL, sourceURL: state.sourceURL }
+        ).forEach(([name, url]) => {
           if(!(url instanceof URL)) {
-            throw new Error(`Bad \`url\`: "${url}"`)
+            throw new Error(`Bad \`${name}\`: "${url}"`)
           }
         })
 
-        const destPath = path.join('.', 'mirror', dlURL.host, creator)
+        const destPath = (
+          path.join('.', 'mirror', state.dlURL.host, state.creator)
+        )
         fs.mkdirSync(destPath, { recursive: true })
 
         const destFile = (
-          sourceURL.pathname.split('/').at(-1)
-          + `${path.extname(dlURL.pathname)}`
+          state.sourceURL.pathname.split('/').at(-1)
+          + `${path.extname(state.dlURL.pathname)}`
         )
         const destFull = path.join(destPath, destFile)
         const saveFull = path.join(
           downloadPath,
-          dlURL.pathname.split('/').at(-1),
+          state.dlURL.pathname.split('/').at(-1),
         )
 
         fs.copyFile(saveFull, destFull, () => {
           fs.unlinkSync(saveFull)
-          unwait({ downloaded: saveFull, saved: destFull })
+          state.unwait(
+            { downloaded: saveFull, saved: destFull }
+          )
         })
       }
     })
   }
 
-  let count = 0
+  await downloadPage.goto(sourceURL, { waitUntil: 'networkidle0' })
 
-  sourceURL = url
-  console.debug(
-    chalk.hex('##FA0')(`${++count} / ${argv.total}`)
-    + `${chalk.hex('#2A7177')(`@${Math.round(argv.perDay)}`)}dl⁄day:`
-    + ` Loading: ${chalk.green(url)}`
-  )
-  await downloadPage.goto(url, { waitUntil: 'networkidle0' })
-
-  creator = (await downloadPage.$eval(
+  state.creator = (await downloadPage.$eval(
     '.contributor-details__contributor__name',
     (elem) => elem.textContent,
   ))
@@ -471,8 +477,11 @@ async function download({ url, browser, argv }) {
     throw new Error('Couldn’t find “SVG” or “Download Now” link.')
   } else {
     const barTime = (argv.clickDelay + argv.linkWait) * 1_000
+    const awaitDl = new Promise(
+      (resolve) => { state.unwait = resolve }
+    )
     const [names] = await Promise.all([
-      new Promise((resolve) => { unwait = resolve }),
+      awaitDl,
       link.click(),
       timeBar(barTime),
     ])
