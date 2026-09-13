@@ -49,6 +49,7 @@ const main = async () => {
       await puppeteer.connect({
         browserWSEndpoint: config.webSocketDebuggerUrl,
         defaultViewport: null,
+        protocolTimeout: argv.cdpTimeout * 1_000,
       })
     )
   )
@@ -96,7 +97,7 @@ const timeBar = async (time) => {
       get remaining() { return this.#total - this.#complete }
     }
     const size = new BarSize()
-    const percentage = Math.floor(params.progress * 10000) / 100
+    const percentage = Math.floor(params.progress * 10_000) / 100
     const barElems = [
       ' >> '
       + '['
@@ -110,8 +111,8 @@ const timeBar = async (time) => {
       + `${percentage.toFixed(2)}%`
       + '\u001b[0m'
       + ' | ETA:'
-      + ` ${Math.round(params.total / 1000)}s`
-      + ` − ${Math.round(params.value / 1000)}s`
+      + ` ${Math.round(params.total / 1_000)}s`
+      + ` − ${Math.round(params.value / 1_000)}s`
       + ` ≈ ${params.eta}s`
     ]
     return barElems.join('')
@@ -175,6 +176,14 @@ async function args() {
       default: Infinity,
       alias: 't',
       description: 'Total number of URLs to download.',
+    })
+    .option('cdp-timeout', {
+      type: 'number',
+      default: 45,
+      alias: 'r',
+      description: (
+        'Number of seconds to wait on Chrome DevTools Protocol operations.'
+      ),
     })
     .option('page-timeout', {
       type: 'number',
@@ -355,7 +364,7 @@ async function* images({ argv, browser }) {
       if(next == null) {
         console.debug(chalk.yellow(`No next page after #${count}.`))
       } else {
-        const timeout = Math.max(argv.clickDelay, argv.linkTimeout) * 1000
+        const timeout = Math.max(argv.clickDelay, argv.linkTimeout) * 1_000
         await Promise.all([
           urlsPage.waitForNavigation({ timeout }),
           next.click(),
@@ -426,51 +435,47 @@ async function download({ url, browser, argv }) {
 
   let count = 0
 
-  try {
-    sourceURL = url
-    console.debug(
-      chalk.hex('##FA0')(`${++count} / ${argv.total}`)
-      + `${chalk.hex('#2A7177')(`@${Math.round(argv.perDay)}`)}dl⁄day:`
-      + ` Loading: ${chalk.green(url)}`
-    )
-    await downloadPage.goto(url, { waitUntil: 'networkidle0' })
+  sourceURL = url
+  console.debug(
+    chalk.hex('##FA0')(`${++count} / ${argv.total}`)
+    + `${chalk.hex('#2A7177')(`@${Math.round(argv.perDay)}`)}dl⁄day:`
+    + ` Loading: ${chalk.green(url)}`
+  )
+  await downloadPage.goto(url, { waitUntil: 'networkidle0' })
 
-    creator = (await downloadPage.$eval(
-      '.contributor-details__contributor__name',
-      (elem) => elem.textContent,
-    ))
-    ?.trim()
-    .replace(/\//g, '／')
-    ?? '𝓾𝓷𝓴𝓷𝓸𝔀𝓷'
+  creator = (await downloadPage.$eval(
+    '.contributor-details__contributor__name',
+    (elem) => elem.textContent,
+  ))
+  ?.trim()
+  .replace(/\//g, '／')
+  ?? '𝓾𝓷𝓴𝓷𝓸𝔀𝓷'
 
-    let link = await downloadPage.$('button ::-p-text(Download Now)')
-    const options = await downloadPage.$(
-      "button[data-action='click->ez-drop-down#handleSubMenuClick']"
-    )
-    if(options) {
-      try {
-        console.info(chalk.orange('Checking options…'))
-        await options.click()
-        const svgLink = await downloadPage.$('button ::-p-text(SVG)')
-        if(svgLink) link = svgLink
-      } catch(err) {
-        console.error(
-          `${chalk.orange('Options Click:')} ${chalk.blue(err.message)}`
-        )
-      }
+  let link = await downloadPage.$('button ::-p-text(Download Now)')
+  const options = await downloadPage.$(
+    "button[data-action='click->ez-drop-down#handleSubMenuClick']"
+  )
+  if(options) {
+    try {
+      console.info(chalk.orange('Checking options…'))
+      await options.click()
+      const svgLink = await downloadPage.$('button ::-p-text(SVG)')
+      if(svgLink) link = svgLink
+    } catch(err) {
+      console.error(
+        `${chalk.orange('Options Click:')} ${chalk.blue(err.message)}`
+      )
     }
-    if(!link) {
-      throw new Error('Couldn’t find “SVG” or “Download Now” link.')
-    } else {
-      const barTime = (argv.clickDelay + argv.linkWait) * 1000
-      const [names] = await Promise.all([
-        new Promise((resolve) => { unwait = resolve }),
-        link.click(),
-        timeBar(barTime),
-      ])
-      return names
-    }
-  } catch(err) {
-    console.error({ 'Loading Error': err })
+  }
+  if(!link) {
+    throw new Error('Couldn’t find “SVG” or “Download Now” link.')
+  } else {
+    const barTime = (argv.clickDelay + argv.linkWait) * 1_000
+    const [names] = await Promise.all([
+      new Promise((resolve) => { unwait = resolve }),
+      link.click(),
+      timeBar(barTime),
+    ])
+    return names
   }
 }
