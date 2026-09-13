@@ -53,13 +53,9 @@ const main = async () => {
     )
   )
 
-  const urls = await images({ argv, browser })
-
-  console.debug(chalk.hex('#C1A40F')(
-    `Downloading ${pluralize('URL', urls.length, true)}`
-  ))
-
-  await download({ urls, browser, argv })
+  for await (const url of images({ argv, browser })) {
+    await download({ url, browser, argv })
+  }
 }
 
 main()
@@ -142,7 +138,7 @@ const timeBar = async (time) => {
 }
 
 async function args() {
-    const args = (
+  const args = (
     yargs(process.argv.slice(2))
     .command(
       '* [urls..]',
@@ -176,7 +172,7 @@ async function args() {
     })
     .option('total', {
       type: 'number',
-      default: 1_000,
+      default: Infinity,
       alias: 't',
       description: 'Total number of URLs to download.',
     })
@@ -234,10 +230,10 @@ async function args() {
   return argv
 }
 
-async function images({ argv, browser }) {
+async function* images({ argv, browser }) {
   let urls = []
   let count = 0
-  let page = await browser.newPage()
+  let urlsPage = await browser.newPage()
 
   if(!Array.isArray(argv.urls)) throw new Error('Bad `urls`.')
 
@@ -263,7 +259,7 @@ async function images({ argv, browser }) {
     const delta = Math.max(0, argv.maxPage - argv.minPage)
     let total = 0
 
-    await page.goto(url.toString(), { waitUntil: 'networkidle2' })
+    await urlsPage.goto(url.toString(), { waitUntil: 'networkidle2' })
 
     outer:
     while(
@@ -272,7 +268,7 @@ async function images({ argv, browser }) {
       && next !== null
     ) {
       const selector = '.ez-resource-grid__item'
-      const items = await page.$$(selector)
+      const items = await urlsPage.$$(selector)
       for(const elem of items) {
         const linkElem = await elem.$('.ez-resource-thumb__link')
         const href = await linkElem?.evaluate((l) => 'href' in l && l.href)
@@ -331,7 +327,11 @@ async function images({ argv, browser }) {
             + ` ${chalk.redBright('Skipping…')}`
           )
         } else {
-          urls.push(new URL(href))
+          // urls.push(new URL(href))
+          // if(urls.length >= argv.total && argv.fixed) {
+          //   break outer
+          // }
+          yield new URL(href)
           if(urls.length >= argv.total && argv.fixed) {
             break outer
           }
@@ -340,11 +340,11 @@ async function images({ argv, browser }) {
       console.debug(
         `  ${chalk.hex('#AB32DE')(`Page #${++count}`)}`
         + ` (${chalk.hex('#FFAAFF')(pluralize('URL', urls.length, true))})`
-        + ` [${chalk.green(page.url())}]`
+        + ` [${chalk.green(urlsPage.url())}]`
       )
-      ;(next = await page.$('a ::-p-text(Next page)'))
+      ;(next = await urlsPage.$('a ::-p-text(Next page)'))
       if(!next) {
-        next = await page.$('a ::-p-text(Show more results)')
+        next = await urlsPage.$('a ::-p-text(Show more results)')
       }
 
       const className = (await next?.getProperty('className'))?.toString()
@@ -357,14 +357,12 @@ async function images({ argv, browser }) {
       } else {
         const timeout = Math.max(argv.clickDelay, argv.linkTimeout) * 1000
         await Promise.all([
-          page.waitForNavigation({ timeout }),
+          urlsPage.waitForNavigation({ timeout }),
           next.click(),
         ])
       }
     }
   }
-
-  return [...new Set(urls)]
 }
 
 /**
@@ -373,108 +371,106 @@ async function images({ argv, browser }) {
  * temporarily disabled, the click then triggers `page.on('response', …)`
  * where the `response.request.url()` can be used to get the desired file.
  */
-async function download({ urls, browser, argv }) {
+let downloadPage
+async function download({ url, browser, argv }) {
   const downloadPath = path.resolve(os.homedir(), 'Downloads')
-
-  const page = await browser.newPage()
-  const client = await page.createCDPSession()
-  await client.send('Browser.setDownloadBehavior', {
-    behavior: 'allow',   // file is named by GUID, no collisions
-    downloadPath,
-    eventsEnabled: true, // required, off by default
-  })
 
   let sourceURL
   let dlURL
   let guid
   let creator
   let unwait
-  client.on('Browser.downloadWillBegin', ({ url, guid: target }) => {
-    guid = target
-    dlURL = new URL(url)
-  })
-  client.on('Browser.downloadProgress', (evt) => {
-    if(evt.guid === guid && evt.state === 'completed') {
-      if(!creator) throw new Error('`creator` not set.')
-      [dlURL, sourceURL].forEach((url) => {
-        if(!(url instanceof URL)) {
-          throw new Error(`Bad \`url\`: "${url}"`)
-        }
-      })
 
-      const destPath = path.join('.', 'mirror', dlURL.host, creator)
-      fs.mkdirSync(destPath, { recursive: true })
+  if(downloadPage == null) {
+    downloadPage = await browser.newPage()
+    const client = await downloadPage.createCDPSession()
+    await client.send('Browser.setDownloadBehavior', {
+      behavior: 'allow',   // file is named by GUID, no collisions
+      downloadPath,
+      eventsEnabled: true, // required, off by default
+    })
 
-      const destFile = (
-        sourceURL.pathname.split('/').at(-1)
-        + `${path.extname(dlURL.pathname)}`
-      )
-      const destFull = path.join(destPath, destFile)
-      const saveFull = path.join(
-        downloadPath,
-        dlURL.pathname.split('/').at(-1),
-      )
+    client.on('Browser.downloadWillBegin', ({ url, guid: target }) => {
+      guid = target
+      dlURL = new URL(url)
+    })
+    client.on('Browser.downloadProgress', (evt) => {
+      if(evt.guid === guid && evt.state === 'completed') {
+        if(!creator) throw new Error('`creator` not set.')
+        [dlURL, sourceURL].forEach((url) => {
+          if(!(url instanceof URL)) {
+            throw new Error(`Bad \`url\`: "${url}"`)
+          }
+        })
 
-      fs.copyFile(saveFull, destFull, () => {
-        fs.unlinkSync(saveFull)
-        unwait({ downloaded: saveFull, saved: destFull })
-      })
-    }
-  })
+        const destPath = path.join('.', 'mirror', dlURL.host, creator)
+        fs.mkdirSync(destPath, { recursive: true })
+
+        const destFile = (
+          sourceURL.pathname.split('/').at(-1)
+          + `${path.extname(dlURL.pathname)}`
+        )
+        const destFull = path.join(destPath, destFile)
+        const saveFull = path.join(
+          downloadPath,
+          dlURL.pathname.split('/').at(-1),
+        )
+
+        fs.copyFile(saveFull, destFull, () => {
+          fs.unlinkSync(saveFull)
+          unwait({ downloaded: saveFull, saved: destFull })
+        })
+      }
+    })
+  }
 
   let count = 0
 
-  for(const [idx, url] of urls.entries()) {
-    try {
-      sourceURL = url
-      console.debug(
-        chalk.hex('##FA0')(`${++count} / ${urls.length}`)
-        + `${chalk.hex('#2A7177')(`@${Math.round(argv.perDay)}`)}dl⁄day:`
-        + ` Loading: ${chalk.green(url)}`
-      )
-      await page.goto(url, { waitUntil: 'networkidle0' })
+  try {
+    sourceURL = url
+    console.debug(
+      chalk.hex('##FA0')(`${++count} / ${argv.total}`)
+      + `${chalk.hex('#2A7177')(`@${Math.round(argv.perDay)}`)}dl⁄day:`
+      + ` Loading: ${chalk.green(url)}`
+    )
+    await downloadPage.goto(url, { waitUntil: 'networkidle0' })
 
-      creator = (await page.$eval(
-        '.contributor-details__contributor__name',
-        (elem) => elem.textContent,
-      ))
-      ?.trim()
-      .replace(/\//g, '／')
-      ?? '𝓾𝓷𝓴𝓷𝓸𝔀𝓷'
+    creator = (await downloadPage.$eval(
+      '.contributor-details__contributor__name',
+      (elem) => elem.textContent,
+    ))
+    ?.trim()
+    .replace(/\//g, '／')
+    ?? '𝓾𝓷𝓴𝓷𝓸𝔀𝓷'
 
-      let link = await page.$('button ::-p-text(Download Now)')
-      const options = await page.$(
-        "button[data-action='click->ez-drop-down#handleSubMenuClick']"
-      )
-      if(options) {
-        try {
-          console.info(chalk.orange('Checking options…'))
-          await options.click()
-          const svgLink = await page.$('button ::-p-text(SVG)')
-          if(svgLink) link = svgLink
-        } catch(err) {
-          console.error(
-            `${chalk.orange('Options Click:')} ${chalk.blue(err.message)}`
-          )
-        }
+    let link = await downloadPage.$('button ::-p-text(Download Now)')
+    const options = await downloadPage.$(
+      "button[data-action='click->ez-drop-down#handleSubMenuClick']"
+    )
+    if(options) {
+      try {
+        console.info(chalk.orange('Checking options…'))
+        await options.click()
+        const svgLink = await downloadPage.$('button ::-p-text(SVG)')
+        if(svgLink) link = svgLink
+      } catch(err) {
+        console.error(
+          `${chalk.orange('Options Click:')} ${chalk.blue(err.message)}`
+        )
       }
-      if(!link) {
-        throw new Error('Couldn’t find “SVG” or “Download Now” link.')
-      } else {
-        const barTime = ((idx < urls.length - 1) ? (
-          (argv.clickDelay + argv.linkWait) * 1000
-        ) : (
-          5000
-        ))
-        const [{ saved }] = await Promise.all([
-          new Promise((resolve) => { unwait = resolve }),
-          link.click(),
-          timeBar(barTime),
-        ])
-        console.debug(chalk.cyan(`Produced: "${saved}"`))
-      }
-    } catch(err) {
-      console.error({ 'Loading Error': err })
     }
+    if(!link) {
+      throw new Error('Couldn’t find “SVG” or “Download Now” link.')
+    } else {
+      const barTime = (argv.clickDelay + argv.linkWait) * 1000
+      const [names] = await Promise.all([
+        new Promise((resolve) => { unwait = resolve }),
+        link.click(),
+        timeBar(barTime),
+      ])
+      return names
+    }
+  } catch(err) {
+    console.error({ 'Loading Error': err })
   }
 }
