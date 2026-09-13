@@ -8,14 +8,15 @@
   "main": "rasterizer",
   "type": "module",
   "dependencies": {
-    "chalk": "^5.0.1",
-    "chrome-remote-interface": "^0.29.0",
+    "chalk": "^6.0.0",
+    "chrome-remote-interface": "^0.34.0",
     "cli-progress": "^3.10.0",
+    "glob": "^13.0.6",
     "jsdom": "^19.0.0",
     "node-fetch": "^3.2.3",
     "paper": "^0.12.15",
     "pluralize": "^8.0.0",
-    "puppeteer": "^13.5.2",
+    "puppeteer": "^25.10.0",
     "svg-pathdata": "^6.0.3",
     "yargs": "^17.7.2"
   },

@@ -1,37 +1,135 @@
 #!/usr/bin/env node
 
-import fs from 'fs'
-import path from 'path'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import yargs from 'yargs'
 import puppeteer from 'puppeteer'
 import pluralize from 'pluralize'
 import { URL } from 'url'
 import progress from 'cli-progress'
-import glob from 'glob'
+import * as glob from 'glob'
+import chalk from 'chalk'
 
 const dirname = path.dirname(new URL(import.meta.url).pathname)
+
+const main = async () => {
+  process.on('SIGINT', () => { throw new Error('Interrupted') })
+  process.on('SIGTERM', () => { throw new Error('Terminated') })
+
+  const argv = await args()
+
+  const configResponse = await fetch(argv.config)
+  const config = await configResponse.json()
+  if(!(config instanceof Object)) throw new Error('Bad config.')
+  if(!('webSocketDebuggerUrl' in config)) {
+    throw new Error('Missing `webSocketDebuggerUrl` in `config`.')
+  }
+  if(typeof config.webSocketDebuggerUrl !== 'string') {
+    throw new Error(`"${typeof config.webSocketDebuggerUrl}" typed endpoint.`)
+  }
+
+  if(argv.perDay) {
+    argv.clickDelay = Math.max(
+      argv.clickDelay,
+      Math.ceil((24 * 60 * 60) / argv.perDay),
+    )
+  } else {
+    argv.perDay = (24 * 60 * 60) / argv.clickDelay
+  }
+
+  console.info(
+    `Connecting to: ${chalk.blueBright(config.webSocketDebuggerUrl)}`
+  )
+
+  const browser = (
+    argv.headless ? (
+      await puppeteer.launch({ headless: argv.headless })
+    ) : (
+      await puppeteer.connect({
+        browserWSEndpoint: config.webSocketDebuggerUrl,
+        defaultViewport: null,
+      })
+    )
+  )
+
+  const urls = await images({ argv, browser })
+
+  console.debug(chalk.hex('#C1A40F')(
+    `Downloading ${pluralize('URL', urls.length, true)}`
+  ))
+
+  await download({ urls, browser, argv })
+}
+
+main()
+.then(() => {
+  console.debug('Exited Normally')
+  return 0
+})
+.catch((reason) => {
+  console.error({ 'Main Error': reason })
+  return 23
+})
+.finally((status) => {
+  console.debug(`Exiting: #${status}…`)
+  process.exit(status)
+})
 
 const sleep = (timeout) => (
   new Promise((r) => setTimeout(r, timeout))
 )
 
 const timeBar = async (time) => {
+  const barColor = (percent) => {
+    if(percent <= 25) {
+      return '38;2;192;37;41;48;5;25'
+    } else if(percent <= 50) {
+      return '38;2;225;62;28;48;5;13'
+    } else if(percent <= 75) {
+      return '38;5;57;48;5;76'
+    } else {
+      return '38;2;44;196;43;48;5;76'
+    }
+  }
+  const format = (options, params) => {
+    class BarSize {
+      #total = options.barsize
+      #complete = Math.round(params.progress * this.#total)
+      get complete() { return this.#complete }
+      get remaining() { return this.#total - this.#complete }
+    }
+    const size = new BarSize()
+    const percentage = Math.floor(params.progress * 10000) / 100
+    const barElems = [
+      ' >> '
+      + '['
+      + `\u001b[${barColor(percentage)}m`
+      + options.barCompleteChar.repeat(size.complete)
+      + options.barGlue
+      + options.barIncompleteChar.repeat(size.remaining)
+      + '\u001b[0m'
+      + ']'
+      + ` \u001b[${barColor((percentage + 25) % 100)}m`
+      + `${percentage.toFixed(2)}%`
+      + '\u001b[0m'
+      + ' | ETA:'
+      + ` ${Math.round(params.total / 1000)}s`
+      + ` − ${Math.round(params.value / 1000)}s`
+      + ` ≈ ${params.eta}s`
+    ]
+    return barElems.join('')
+  }
   const bar = new progress.Bar({
-    format: (
-      ' >> [\u001b[32m{bar}\u001b[0m] {percentage}%'
-      + ' | ETA: {eta}s | {value}/{total}'
-    ),
-
-    // same chars for bar elements, just separated by colors
+    format,
     barCompleteChar: '█',
     barIncompleteChar: '▒',
-
-    // change color to yellow between bar complete/incomplete -> incomplete becomes yellow
-    barGlue: '\u001b[33m',
+    barGlue: '\u001b[33;1m',
+    BarSize: 130,
   })
   bar.start(time, 0)
 
-  const step = 1000
+  const step = 500
   let current
 
   for(current = 0; current < time; current += step) {
@@ -43,66 +141,16 @@ const timeBar = async (time) => {
   bar.stop()
 }
 
-const processStopper = {
-  wait({ link, page, timeout, chalk }) {
-    if(!link) {
-      console.warn('Error: Link not found.')
-    } else {
-      try {
-        return new Promise(async (resolve, reject) => {
-          this.resolve = resolve
-          this.reject = reject
-
-          try {
-            await Promise.all([
-              page.waitForNavigation({
-                timeout: timeout ?? 5 * 60 * 1000
-              }),
-              link.click(),
-            ])
-          } catch(err) {
-            console.error(
-              chalk.bold.hex('#FF8F34')('Error: ')
-              + chalk.red(err.message)
-            )
-            reject(err.message)
-          }
-        })
-      } catch(err) {
-        console.error(err.message)
-      }
-    }
-  },
-  async unblock({ url, chalk: _chalk }) {
-    const { resolve, base } = this
-    resolve?.({ url, base })
-  }
-}
-
-let client // accessed in main `catch`
-
-const allowDownloads = async () => {
-  if(client) {
-    const dls = path.join(process.env.HOME ?? '~', 'Downloads')
-    await client.send('Page.setDownloadBehavior', {
-      behavior: 'allow',
-      downloadPath: dls,
-    })
-  }
-}
-
-
-const main = async () => {
-  process.on('SIGINT', () => { throw new Error('Interrupted') })
-  process.on('SIGTERM', () => { throw new Error('Terminated') })
-
-  const args = (
+async function args() {
+    const args = (
     yargs(process.argv.slice(2))
     .command(
       '* [urls..]',
       (
-        "This program is for downloading and saving the art from Vecteezy.com using Puppeteer.\n\n"
-        + "It requires `google-chrome --remote-debugging-port=9222` be run prior.\n\n"
+        'This program is for downloading and saving the art'
+        + ' from Vecteezy.com using Puppeteer.'
+        + "\n\n"
+        + "Run `google-chrome --remote-debugging-port=9222` first.\n\n"
         + `Ran: ${process.argv.join(' ')}`
       ),
     )
@@ -142,7 +190,10 @@ const main = async () => {
       type: 'number',
       default: null,
       alias: 'd',
-      description: 'Number of images to download per day. (Overrides `link-wait` if specified.)',
+      description: (
+        'Number of images to download per day.'
+        + ' (Overrides `link-wait` if specified.)'
+      ),
     })
     .option('link-wait', {
       type: 'number',
@@ -153,7 +204,7 @@ const main = async () => {
     .option('click-delay', {
       type: 'number',
       default: 7,
-      alias: 'c',
+      alias: 'l',
       description: 'Number of seconds to wait between link clicks.',
     })
     .option('fixed', {
@@ -176,111 +227,17 @@ const main = async () => {
     .help()
     .showHelpOnFail(true, 'HELP!')
   )
-  const argv = await args.argv
-
-  const chalk = (await import('chalk')).default
-  const fetch = (await import('node-fetch')).default
-  const configResponse = await fetch(argv.config)
-  const config = await configResponse.json()
-  if(!(config instanceof Object)) throw new Error('Bad config.')
-  if(!('webSocketDebuggerUrl' in config)) {
-    throw new Error('Missing `webSocketDebuggerUrl` in `config`.')
+  const { argv } = args
+  if(argv.verbose) {
+    console.debug({ Arguments: argv })
   }
-  const endpoint = config.webSocketDebuggerUrl
-  if(typeof endpoint !== 'string') {
-    throw new Error(`"${typeof endpoint}" typed endpoint.`)
-  }
+  return argv
+}
 
-  if(argv.perDay) {
-    argv.clickDelay = Math.ceil((24 * 60 * 60) / argv.perDay)
-  }
-
-  console.info(`Connecting to: ${chalk.blueBright(endpoint)}`)
-
-  const browser = (
-    argv.headless ? (
-      await puppeteer.launch({ headless: argv.headless })
-    ) : (
-      await puppeteer.connect({
-        browserWSEndpoint: endpoint,
-        defaultViewport: null,
-      })
-    )
-  )
-
+async function images({ argv, browser }) {
   let urls = []
   let count = 0
   let page = await browser.newPage()
-  client = await page.target().createCDPSession()
-  let filename, name
-
-  page.on('response', async (res) => {
-    try {
-      if(res.status() < 300) {
-        const request = await res.request()
-        const url = new URL(request.url())
-
-        let file = url.pathname.split('/').at(-1) ?? (() => { throw new Error(`Bad \`url\`: ${url}.`) })()
-        if(file.endsWith('.zip')) {
-          console.debug(`Processing: ${chalk.hex('#9E78FF')(url)}`)
-          console.debug(`  [${chalk.hex('#9E7922')(page.url())}]`)
-
-          const creator = (await page.$eval(
-            '.contributor-details__contributor__name',
-            (elem) => elem.textContent,
-          ))
-          ?.trim()
-          .replace(/\//g, '／')
-
-          const dlPath = `./mirror/${url.host}/${creator}`
-          try {
-            await fs.promises.access(dlPath, fs.constants.F_OK)
-          } catch(dne) {
-            console.debug(chalk.hex('#FF5AD9')(`Creating: ${dlPath}`))
-            await fs.promises.mkdir(dlPath, { recursive: true })
-          }
-
-          if(!filename.endsWith('.zip')) filename += '.zip'
-          try {
-            await fs.promises.access(
-              path.join(dlPath, file), fs.constants.F_OK
-            )
-            console.error(chalk.red(`Renaming ${file} to ${filename}`))
-            fs.renameSync(path.join(dlPath, file), path.join(dlPath, filename))
-          } catch(dne) {
-            const out = path.join(dlPath, filename)
-            try {
-              await fs.promises.access(out, fs.constants.F_OK)
-              console.error(chalk.red(`${out} Exists; Skipping.`))
-            } catch(dne) {
-              console.debug(
-                `${chalk.hex('#60D700')(new Date().toISOString())}: `
-                + `Downloading To: ${chalk.hex('#8BB8DE')(out)}`
-              )
-              try {
-                const dl = await fetch(url.toString())
-                const fileStream = fs.createWriteStream(out)
-                await new Promise((resolve, reject) => {
-                  dl.body?.on('error', reject)
-                  fileStream.on('finish', resolve)
-                  dl.body?.pipe(fileStream)
-                })
-              } catch(error) {
-                console.error({ error })
-              }
-            }
-          } finally {
-            await timeBar(argv.clickDelay * 1000)
-            await processStopper.unblock({
-              url: url.toString(), chalk
-            })
-          }
-        }
-      }
-    } catch(err) {
-      console.error(chalk.red(err.message))
-    }
-  })
 
   if(!Array.isArray(argv.urls)) throw new Error('Bad `urls`.')
 
@@ -291,7 +248,7 @@ const main = async () => {
     const url = new URL(
       `${
         urlString
-      }${/[?&]page=/i.test(urlString) ? '' : (
+      }${/[?&]page=/i.test(urlString) || argv.minPage === 1 ? '' : (
         `${
           urlString.includes('?') ? '&' : '?'
         }page=${
@@ -309,7 +266,11 @@ const main = async () => {
     await page.goto(url.toString(), { waitUntil: 'networkidle2' })
 
     outer:
-    while(pageNum++ <= delta && (argv.total == null || urls.length < argv.total) && next !== null) {
+    while(
+      pageNum++ <= delta
+      && (argv.total == null || urls.length < argv.total)
+      && next !== null
+    ) {
       const selector = '.ez-resource-grid__item'
       const items = await page.$$(selector)
       for(const elem of items) {
@@ -319,12 +280,16 @@ const main = async () => {
           console.error(`Bad \`href\` (${typeof href}).`)
           continue
         }
-        const filename = `${href.replace(/^.*\//g, '')}.zip`
-        const urlWildcard = url.host.replace(/^.*\.([^.]+)\.([^.]+)$/, '*.$1.$2')
+        const filename = `${href.replace(/^.*\//g, '')}.*`
+        const urlWildcard = (
+          url.host.replace(/^.*\.([^.]+)\.([^.]+)$/, '*.$1.$2')
+        )
         if(argv.verbose) {
           console.info(
             chalk.hex('#639DF4')('Checking ')
-            + chalk.hex(urls.length < argv.total ? '#730022' : '#12CD43')(`#${urls.length + 1}`)
+            + chalk.hex(
+              urls.length < argv.total ? '#730022' : '#12CD43'
+            )(`#${urls.length + 1}`)
             + chalk.hex('#855')(`(${urls.length - argv.total})`)
 
             + chalk.hex('#EBC500')('/')
@@ -333,26 +298,40 @@ const main = async () => {
             + chalk.hex('#FFAAFF')(`${urlWildcard}: ${filename}`)
           )
         }
-        let [match] = glob.sync(path.join(
+        const specificPattern = path.join(
           dirname, 'mirror', urlWildcard, '*', filename
-        ))
+        )
+        if(argv.verbose) {
+          console.debug(
+            chalk.yellow('Checking:')
+            + ` ${chalk.hex('#E30DCF')(specificPattern)}`
+          )
+        }
+        let [match] = glob.sync(specificPattern)
         if(!match) {
-          [match] = glob.sync(path.join(
+          const generalPattern = path.join(
             dirname, 'mirror', '*', '*', filename
-          ))
+          )
+          if(argv.verbose) {
+            console.debug(
+              chalk.yellow('Generalizing Check:')
+              + ` ${chalk.hex('#E30DCF')(generalPattern)}`
+            )
+          }
+          ;[match] = glob.sync(generalPattern)
         }
         if(match) {
           console.info(
             `${chalk.hex('#FF7B2E')(match.replace(dirname, ''))} is present;`
             + ` ${chalk.redBright('Skipping…')}`
           )
-        } else if(/\/(photo|video)\//.test(href)) {
+        } else if(/\/(photo|video|png|psd|vnd.adobe.photoshop)\//.test(href)) {
           console.info(
             `${chalk.hex('#7BFF2E')(filename)} is a photo;`
             + ` ${chalk.redBright('Skipping…')}`
           )
         } else {
-          urls.push(href)
+          urls.push(new URL(href))
           if(urls.length >= argv.total && argv.fixed) {
             break outer
           }
@@ -363,12 +342,9 @@ const main = async () => {
         + ` (${chalk.hex('#FFAAFF')(pluralize('URL', urls.length, true))})`
         + ` [${chalk.green(page.url())}]`
       )
-      ;([next] = await page.$x("//a[contains(., 'Next page')]"))
+      ;(next = await page.$('a ::-p-text(Next page)'))
       if(!next) {
-        [next] = await page.$x("//a[contains(., 'Next Page')]")
-      }
-      if(!next) {
-        [next] = await page.$x("//a[contains(., 'Show more results')]")
+        next = await page.$('a ::-p-text(Show more results)')
       }
 
       const className = (await next?.getProperty('className'))?.toString()
@@ -376,10 +352,10 @@ const main = async () => {
         next = null
       }
 
-      if(next === null) {
+      if(next == null) {
         console.debug(chalk.yellow(`No next page after #${count}.`))
       } else {
-        let timeout = Math.max(argv.clickDelay, argv.linkTimeout) * 1000
+        const timeout = Math.max(argv.clickDelay, argv.linkTimeout) * 1000
         await Promise.all([
           page.waitForNavigation({ timeout }),
           next.click(),
@@ -388,66 +364,117 @@ const main = async () => {
     }
   }
 
-  count = 0
-  urls = [...new Set(urls)]
-  console.debug(chalk.hex('#C1A40F')(
-    `Downloading ${pluralize('URL', urls.length, true)}`
-  ))
+  return [...new Set(urls)]
+}
 
-  for(const url of urls) {
-    try {
-      const pgperday = (
-        24 * 60 * 60 / argv.clickDelay
+/**
+ * Clicking on the "Download" button triggers a download to the default
+ * download location. To download to a custom location, downloading is
+ * temporarily disabled, the click then triggers `page.on('response', …)`
+ * where the `response.request.url()` can be used to get the desired file.
+ */
+async function download({ urls, browser, argv }) {
+  const downloadPath = path.resolve(os.homedir(), 'Downloads')
+
+  const page = await browser.newPage()
+  const client = await page.createCDPSession()
+  await client.send('Browser.setDownloadBehavior', {
+    behavior: 'allow',   // file is named by GUID, no collisions
+    downloadPath,
+    eventsEnabled: true, // required, off by default
+  })
+
+  let sourceURL
+  let dlURL
+  let guid
+  let creator
+  let unwait
+  client.on('Browser.downloadWillBegin', ({ url, guid: target }) => {
+    guid = target
+    dlURL = new URL(url)
+  })
+  client.on('Browser.downloadProgress', (evt) => {
+    if(evt.guid === guid && evt.state === 'completed') {
+      if(!creator) throw new Error('`creator` not set.')
+      [dlURL, sourceURL].forEach((url) => {
+        if(!(url instanceof URL)) {
+          throw new Error(`Bad \`url\`: "${url}"`)
+        }
+      })
+
+      const destPath = path.join('.', 'mirror', dlURL.host, creator)
+      fs.mkdirSync(destPath, { recursive: true })
+
+      const destFile = (
+        sourceURL.pathname.split('/').at(-1)
+        + `${path.extname(dlURL.pathname)}`
       )
+      const destFull = path.join(destPath, destFile)
+      const saveFull = path.join(
+        downloadPath,
+        dlURL.pathname.split('/').at(-1),
+      )
+
+      fs.copyFile(saveFull, destFull, unwait)
+      fs.unlinkSync(saveFull)
+
+      return { downloaded: saveFull, saved: destFull }
+    }
+  })
+
+  let count = 0
+
+  for(const [idx, url] of urls.entries()) {
+    try {
+      sourceURL = url
       console.debug(
-          chalk.hex('##FA0')(`${++count} / ${urls.length}`)
-        + `${chalk.hex('#2A7177')(`@${Math.round(pgperday)}`)}dl⁄day:`
+        chalk.hex('##FA0')(`${++count} / ${urls.length}`)
+        + `${chalk.hex('#2A7177')(`@${Math.round(argv.perDay)}`)}dl⁄day:`
         + ` Loading: ${chalk.green(url)}`
       )
       await page.goto(url, { waitUntil: 'networkidle0' })
 
-      filename = url.replace(/.*\//g, '')
+      creator = (await page.$eval(
+        '.contributor-details__contributor__name',
+        (elem) => elem.textContent,
+      ))
+      ?.trim()
+      .replace(/\//g, '／')
+      ?? '𝓾𝓷𝓴𝓷𝓸𝔀𝓷'
 
-      const [desc] = await page.$x("//meta[@itemprop='description']")
-      if(desc) {
-        name = await (await desc.getProperty('content')).jsonValue()
-      } else {
-        console.debug('Couldn’t find description!')
-        name = null
+      let link = await page.$('button ::-p-text(Download Now)')
+      const options = await page.$(
+        "button[data-action='click->ez-drop-down#handleSubMenuClick']"
+      )
+      if(options) {
+        try {
+          console.info(chalk.orange('Checking options…'))
+          await options.click()
+          const svgLink = await page.$('button ::-p-text(SVG)')
+          if(svgLink) link = svgLink
+        } catch(err) {
+          console.error(
+            `${chalk.orange('Options Click:')} ${chalk.blue(err.message)}`
+          )
+        }
       }
-
-      const [link] = await page.$x("//button[contains(text(), 'Download Now')]")
       if(!link) {
-        throw new  Error('Couldn’t find “Download Now” link.')
+        throw new Error('Couldn’t find “SVG” or “Download Now” link.')
       } else {
-        await client.send('Page.setDownloadBehavior', {
-          behavior: 'deny',
-        })
-        await processStopper.wait({
-          link, page, timeout: (argv.clickDelay + argv.linkTimeout) * 1000, chalk,
-        })
-        // await link.click()
-        // await page.waitForNavigation()
-        // await page.waitForTimeout(30000)
-        // await timeBar(30000)
+        const barTime = ((idx < urls.length - 1) ? (
+          (argv.clickDelay + argv.linkWait) * 1000
+        ) : (
+          5000
+        ))
+        const [{ saved }] = await Promise.all([
+          new Promise((resolve) => { unwait = resolve }),
+          link.click(),
+          timeBar(barTime),
+        ])
+        console.debug(chalk.cyan(`Produced: "${saved}"`))
       }
     } catch(err) {
-      console.error(`Loading Error: ${chalk.red(err.message ?? err)}`)
+      console.error({ 'Loading Error': err })
     }
   }
 }
-
-main()
-.then(() => {
-  console.debug('Exited Normally')
-  return 0
-})
-.catch(async (reason) => {
-  console.error(`Error: "${reason.message ?? reason}"`)
-  return 23
-})
-.finally(async (status) => {
-  console.debug(`Reenabling Downloads & Exiting #${status}…`)
-  await allowDownloads()
-  process.exit(status)
-})
